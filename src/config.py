@@ -5,7 +5,10 @@ import logging
 
 class Config:
     def __init__(self):
-        load_dotenv()
+        # Always prefer the current .env values over inherited process variables.
+        # The manager can edit .env while it stays open, and child processes should
+        # pick up those edits instead of stale inherited values.
+        load_dotenv(override=True)
         
         # Set up logging configuration
         valid_levels = {
@@ -48,19 +51,43 @@ class Config:
             for mod_id in os.getenv('MOD_IDS', '').split(',')
             if mod_id.strip()
         ]
-        logging.debug(f"Loaded CurseForge settings - mod_ids: {self.mod_ids}")
+        following_mod_ids_env = os.getenv('FOLLOWING_MOD_IDS')
+        if following_mod_ids_env is None:
+            self.following_mod_ids: List[int] = list(self.mod_ids)
+        else:
+            self.following_mod_ids = [
+                int(mod_id.strip())
+                for mod_id in following_mod_ids_env.split(',')
+                if mod_id.strip()
+            ]
+        logging.debug(f"Loaded CurseForge settings - mod_ids: {self.mod_ids}, following_mod_ids: {self.following_mod_ids}")
         
         # Message templates
         self.message_tag: str = os.getenv('MESSAGE_TAG', '')
         self.message_header: str = os.getenv('MESSAGE_HEADER', '')
         self.message_footer: str = os.getenv('MESSAGE_FOOTER', '')
-        logging.debug("Loaded message templates")
+        logging.debug("Loaded message templates and labels")
+
+        check_interval_raw = os.getenv('CHECK_INTERVAL_MINUTES', os.getenv('CHECK_INTERVAL', '5')).strip()
+        try:
+            self.check_interval_minutes: float = float(check_interval_raw)
+        except ValueError:
+            logging.warning(f"Invalid CHECK_INTERVAL_MINUTES '{check_interval_raw}', defaulting to 5")
+            self.check_interval_minutes = 5.0
+        if self.check_interval_minutes <= 0:
+            logging.warning(f"CHECK_INTERVAL_MINUTES must be positive, got {self.check_interval_minutes}. Defaulting to 5")
+            self.check_interval_minutes = 5.0
         
         # Feature flags
         self.announce_messages: bool = os.getenv('ANNOUNCE_MESSAGES', 'false').lower() == 'true'
         self.debug: bool = os.getenv('DEBUG', 'false').lower() == 'true'
         self.show_logo: bool = os.getenv('SHOW_LOGO', 'true').lower() == 'true'
         self.add_reactions: bool = os.getenv('ADD_REACTIONS', 'true').lower() == 'true'
+        self.message_content_intent: bool = os.getenv('MESSAGE_CONTENT_INTENT', 'false').lower() == 'true'
+        self.logo_style: str = os.getenv('LOGO_STYLE', 'thumbnail').strip().lower()
+        if self.logo_style not in {'thumbnail', 'fullwidth'}:
+            logging.warning(f"Invalid LOGO_STYLE '{self.logo_style}', defaulting to thumbnail")
+            self.logo_style = 'thumbnail'
         logging.debug(f"Loaded feature flags - announce_messages: {self.announce_messages}, debug: {self.debug}, show_logo: {self.show_logo}, add_reactions: {self.add_reactions}")
     
     def validate(self) -> List[str]:
@@ -88,6 +115,9 @@ class Config:
                 f"than mods ({len(self.mod_ids)}). "
                 "Extra mods will use the first channel."
             )
+
+        if self.check_interval_minutes <= 0:
+            errors.append("CHECK_INTERVAL_MINUTES must be greater than 0")
             
         if errors:
             logging.error(f"Configuration validation failed with errors: {errors}")

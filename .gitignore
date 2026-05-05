@@ -1,2 +1,6 @@
 .env
 releases/
+.venv/
+logs/
+bot.pid
+src/__pycache__/

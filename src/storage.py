@@ -80,3 +80,31 @@ class ReleaseStorage:
             releases = cursor.fetchall()
             logging.debug(f"Retrieved {len(releases)} latest releases")
             return releases
+
+    def get_all_releases(self) -> list:
+        """Get all stored releases ordered by mod and newest first."""
+        logging.debug("Getting all stored releases")
+        with sqlite3.connect(self.db_file) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT mod_id, version, release_date
+                FROM releases
+                ORDER BY mod_id ASC, release_date DESC
+            ''')
+            releases = cursor.fetchall()
+            logging.debug(f"Retrieved {len(releases)} stored releases")
+            return releases
+
+    def delete_release(self, mod_id: str, version: str) -> bool:
+        """Delete one stored release version."""
+        logging.debug(f"Deleting stored release {version} for mod {mod_id}")
+        with sqlite3.connect(self.db_file) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM releases WHERE mod_id = ? AND version = ?',
+                (mod_id, version)
+            )
+            conn.commit()
+            deleted = cursor.rowcount > 0
+            logging.debug(f"Delete release result for {mod_id}/{version}: {deleted}")
+            return deleted

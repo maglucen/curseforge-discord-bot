@@ -9,7 +9,7 @@ from src.config import config
 # Set up intents
 logging.debug("Setting up Discord intents")
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = config.message_content_intent
 
 # Initialize bot
 logging.debug("Initializing Discord bot")
