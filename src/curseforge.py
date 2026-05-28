@@ -5,6 +5,7 @@ from datetime import datetime
 import logging
 from markdownify import markdownify as md
 import re
+from urllib.parse import urlencode
 
 class CurseForgeAPI:
     BASE_URL = "https://api.curseforge.com/v1"
@@ -66,6 +67,20 @@ class CurseForgeAPI:
         mod_info = response['data']
         logging.debug(f"Mod info: {mod_info}")
         return mod_info
+
+    async def search_mods(self, query: str, game_id: Optional[int] = None, page_size: int = 20) -> List[Dict[str, Any]]:
+        """Search CurseForge projects by name."""
+        params: Dict[str, Any] = {
+            "searchFilter": query,
+            "pageSize": page_size,
+            "sortField": 2,
+            "sortOrder": "desc",
+        }
+        if game_id is not None:
+            params["gameId"] = game_id
+
+        response = await self._make_request(f"/mods/search?{urlencode(params)}")
+        return response.get("data", [])
 
     async def get_mod_files(self, mod_id: int) -> List[Dict[str, Any]]:
         """Get all files for a specific mod."""

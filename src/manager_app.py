@@ -378,6 +378,8 @@ class BotManagerApp:
         self.action_lock = threading.Lock()
         self.follow_logs = tk.BooleanVar(value=True)
         self.new_mod_id = tk.StringVar(value="")
+        self.mod_search_text = tk.StringVar(value="")
+        self.mod_search_status_text = tk.StringVar(value="")
         self.new_release_channel_id = tk.StringVar(value="")
         self.status_text = tk.StringVar(value="Checking...")
         self.pid_text = tk.StringVar(value="-")
@@ -402,6 +404,9 @@ class BotManagerApp:
         self.last_log_snapshot = ""
         self.last_log_signature: tuple[bool, int] | None = None
         self.release_summaries: list[manager_service.ModReleaseSummary] = []
+        self.mod_search_results: list[manager_service.ModSearchResult] = []
+        self.mod_search_window: tk.Toplevel | None = None
+        self.mod_search_tree: ttk.Treeview | None = None
         self.pending_confirmations: dict[str, float] = {}
         self.sidebar_panes: tk.PanedWindow | None = None
         self.releases_panes: tk.PanedWindow | None = None
@@ -1118,8 +1123,11 @@ class BotManagerApp:
         mod_editor.columnconfigure(3, weight=0)
         ttk.Label(mod_editor, text="New MOD_ID", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
         self._create_entry(mod_editor, textvariable=self.new_mod_id, width=18).grid(row=0, column=1, sticky="ew", padx=(8, 12))
-        self._create_button(mod_editor, text="Add Mod", command=self._add_mod, accent=True).grid(row=0, column=2, sticky="ew")
+        self._create_button(mod_editor, text="Add by ID", command=self._add_mod, accent=True).grid(row=0, column=2, sticky="ew")
         self._create_button(mod_editor, text="Remove Selected Mod", command=self._remove_selected_mod).grid(row=0, column=3, sticky="ew", padx=(8, 0))
+        ttk.Label(mod_editor, text="Search by name", style="Panel.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self._create_entry(mod_editor, textvariable=self.mod_search_text, width=28).grid(row=1, column=1, sticky="ew", padx=(8, 12), pady=(8, 0))
+        self._create_button(mod_editor, text="Search", command=self._search_mods).grid(row=1, column=2, sticky="ew", pady=(8, 0))
 
         tracked_outer, tracked_mods_pane = self._create_surface(releases_content, bg=PANEL_ALT, padding=18)
         tracked_outer.grid(row=2, column=0, sticky="nsew")
@@ -2179,6 +2187,15 @@ class BotManagerApp:
                 self._set_notice(f"{title}: {message}")
             elif event_type == "clear_add_inputs":
                 self.new_mod_id.set("")
+                self.mod_search_text.set("")
+            elif event_type == "mod_search_results":
+                query, results = payload  # type: ignore[misc]
+                self._show_mod_search_results(str(query), results)  # type: ignore[arg-type]
+            elif event_type == "mod_search_error":
+                message = str(payload)
+                self.mod_search_status_text.set(message)
+                self._append_output(f"Mod search failed: {message}")
+                self._set_notice(f"Search failed: {message}")
 
         self.root.after(200, self._process_events)
 
@@ -2297,6 +2314,162 @@ class BotManagerApp:
             self.events.put(("toast", ("Releases", f"Added mod {mod_name} ({mod_id}). Restart the bot to apply it.")))
 
         self._run_action("Add Mod", task)
+
+    def _searchable_game_ids(self) -> list[str]:
+        game_ids: list[str] = []
+        for summary in self.release_summaries:
+            if summary.game_id and summary.game_id not in game_ids:
+                game_ids.append(summary.game_id)
+        return game_ids
+
+    def _search_mods(self) -> None:
+        query = self.mod_search_text.get().strip()
+        if len(query) < 2:
+            self._append_output("Enter at least 2 characters to search.")
+            return
+
+        game_ids = self._searchable_game_ids()
+        self._open_mod_search_window(query)
+        self.mod_search_status_text.set("Searching CurseForge...")
+
+        thread = threading.Thread(target=self._mod_search_worker, args=(query, game_ids), daemon=True)
+        thread.start()
+
+    def _mod_search_worker(self, query: str, game_ids: list[str]) -> None:
+        try:
+            results = manager_service.search_mods(query, game_ids)
+        except Exception as exc:
+            self.events.put(("mod_search_error", str(exc)))
+            return
+
+        self.events.put(("mod_search_results", (query, results)))
+
+    def _open_mod_search_window(self, query: str) -> None:
+        if self.mod_search_window is not None and self.mod_search_window.winfo_exists():
+            self.mod_search_window.deiconify()
+            self.mod_search_window.lift()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("Search CurseForge Mods")
+        window.geometry("980x520")
+        window.minsize(760, 420)
+        window.configure(bg=BG)
+        window.protocol("WM_DELETE_WINDOW", self._close_mod_search_window)
+        self.mod_search_window = window
+
+        outer, body = self._create_surface(window, bg=PANEL_ALT, padding=18)
+        outer.pack(fill="both", expand=True, padx=16, pady=16)
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(2, weight=1)
+
+        tk.Label(body, text="Search CurseForge Mods", bg=PANEL_ALT, fg=TEXT, font=("Segoe UI Semibold", 18)).grid(row=0, column=0, sticky="w")
+        tk.Label(
+            body,
+            text="Public results depend on what the CurseForge API returns for your key. Direct MOD_ID add still works for private or unlisted projects you can access.",
+            bg=PANEL_ALT,
+            fg=MUTED,
+            font=("Segoe UI", 10),
+            wraplength=900,
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(6, 12))
+
+        results_frame = tk.Frame(body, bg=PANEL_ALT)
+        results_frame.grid(row=2, column=0, sticky="nsew")
+        results_frame.columnconfigure(0, weight=1)
+        results_frame.rowconfigure(0, weight=1)
+
+        columns = ("mod_name", "game_name", "mod_id", "download_count", "thumbs_up_count", "curseforge_updated_at")
+        tree = ttk.Treeview(results_frame, columns=columns, show="headings", height=10)
+        tree.grid(row=0, column=0, sticky="nsew")
+        tree.heading("mod_name", text="Mod")
+        tree.heading("game_name", text="Game")
+        tree.heading("mod_id", text="MOD_ID")
+        tree.heading("download_count", text="Downloads")
+        tree.heading("thumbs_up_count", text="Likes")
+        tree.heading("curseforge_updated_at", text="Updated")
+        tree.column("mod_name", width=260, anchor="w", stretch=True)
+        tree.column("game_name", width=190, anchor="w", stretch=True)
+        tree.column("mod_id", width=100, anchor="w", stretch=False)
+        tree.column("download_count", width=110, anchor="e", stretch=False)
+        tree.column("thumbs_up_count", width=80, anchor="e", stretch=False)
+        tree.column("curseforge_updated_at", width=160, anchor="w", stretch=False)
+        tree.bind("<Double-1>", lambda _event: self._add_selected_search_result())
+        self.mod_search_tree = tree
+
+        yscroll = ttk.Scrollbar(results_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=yscroll.set)
+        yscroll.grid(row=0, column=1, sticky="ns", padx=(8, 0))
+
+        footer = tk.Frame(body, bg=PANEL_ALT)
+        footer.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        footer.columnconfigure(0, weight=1)
+        tk.Label(footer, textvariable=self.mod_search_status_text, bg=PANEL_ALT, fg=MUTED, font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w")
+        self._create_button(footer, text="Add Selected", command=self._add_selected_search_result, accent=True).grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self._create_button(footer, text="Close", command=self._close_mod_search_window).grid(row=0, column=2, sticky="e", padx=(8, 0))
+
+        self.mod_search_status_text.set(f'Searching "{query}"...')
+
+    def _close_mod_search_window(self) -> None:
+        if self.mod_search_window is not None and self.mod_search_window.winfo_exists():
+            self.mod_search_window.destroy()
+        self.mod_search_window = None
+        self.mod_search_tree = None
+
+    def _show_mod_search_results(self, query: str, results: list[manager_service.ModSearchResult]) -> None:
+        self.mod_search_results = results
+        self._open_mod_search_window(query)
+        self._populate_mod_search_tree()
+        if results:
+            self.mod_search_status_text.set(f'Found {len(results)} result(s) for "{query}". Double-click a row or use Add Selected.')
+            self._set_notice(f"Search returned {len(results)} result(s).")
+        else:
+            self.mod_search_status_text.set(
+                f'No public results for "{query}". Try direct MOD_ID add if the project is private or not indexed yet.'
+            )
+            self._set_notice("Search returned no results.")
+
+    def _populate_mod_search_tree(self) -> None:
+        if self.mod_search_tree is None:
+            return
+        for item in self.mod_search_tree.get_children():
+            self.mod_search_tree.delete(item)
+        for result in self.mod_search_results:
+            self.mod_search_tree.insert(
+                "",
+                tk.END,
+                iid=f"search:{result.mod_id}",
+                values=(
+                    result.mod_name,
+                    result.game_name,
+                    result.mod_id,
+                    result.download_count,
+                    result.thumbs_up_count,
+                    self._format_curseforge_date(result.curseforge_updated_at),
+                ),
+            )
+        if self.mod_search_results:
+            self.mod_search_tree.selection_set(f"search:{self.mod_search_results[0].mod_id}")
+
+    def _selected_search_result(self) -> manager_service.ModSearchResult | None:
+        if self.mod_search_tree is None:
+            return None
+        selection = self.mod_search_tree.selection()
+        if not selection:
+            return None
+        selected_id = selection[0].split(":", 1)[-1]
+        for result in self.mod_search_results:
+            if result.mod_id == selected_id:
+                return result
+        return None
+
+    def _add_selected_search_result(self) -> None:
+        result = self._selected_search_result()
+        if result is None:
+            self._append_output("Select a search result first.")
+            return
+        self.new_mod_id.set(result.mod_id)
+        self._add_mod()
 
     def _remove_selected_mod(self) -> None:
         selected_mod = self._selected_mod_id()

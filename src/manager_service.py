@@ -93,6 +93,18 @@ class ModReleaseSummary:
 
 
 @dataclass
+class ModSearchResult:
+    mod_id: str
+    mod_name: str
+    game_id: str
+    game_name: str
+    curseforge_updated_at: str
+    download_count: int
+    thumbs_up_count: int
+    public_url: str
+
+
+@dataclass
 class EditableSettings:
     message_tag: str
     debug_channel_id: str
@@ -411,6 +423,61 @@ async def _fetch_mod_names_async(mod_ids: list[str]) -> dict[str, str]:
 async def _fetch_mod_info_async(mod_id: str) -> dict:
     cf_api = CurseForgeAPI(config.curseforge_api_key)
     return await cf_api.get_mod_info(int(mod_id))
+
+
+def _configured_game_ids_from_cache() -> list[str]:
+    game_ids: list[str] = []
+    for mod_id in get_configured_mod_ids():
+        cached_info = get_mod_cached_info(mod_id)
+        game_id = str(cached_info.get("game_id", ""))
+        if game_id and game_id not in game_ids:
+            game_ids.append(game_id)
+    return game_ids
+
+
+def _build_mod_search_result(mod_id: str, mod_info: dict) -> ModSearchResult:
+    _cache_mod_info(mod_id, mod_info)
+    cached_info = MOD_INFO_CACHE.get(mod_id, {})
+    return ModSearchResult(
+        mod_id=mod_id,
+        mod_name=str(cached_info.get("mod_name", mod_id)),
+        game_id=str(cached_info.get("game_id", "")),
+        game_name=str(cached_info.get("game_name", "Unknown game")),
+        curseforge_updated_at=str(cached_info.get("curseforge_updated_at", "")),
+        download_count=int(cached_info.get("download_count", 0)),
+        thumbs_up_count=int(cached_info.get("thumbs_up_count", 0)),
+        public_url=str(cached_info.get("public_url", "")),
+    )
+
+
+async def _search_mods_async(query: str, game_ids: list[str]) -> list[ModSearchResult]:
+    cf_api = CurseForgeAPI(config.curseforge_api_key)
+    normalized_game_ids = [game_id for game_id in game_ids if game_id.isdigit()]
+    search_game_ids: list[int | None] = [int(game_id) for game_id in normalized_game_ids] or [None]
+    results_by_id: dict[str, ModSearchResult] = {}
+
+    for game_id in search_game_ids:
+        for mod_info in await cf_api.search_mods(query, game_id=game_id):
+            mod_id = str(mod_info.get("id") or "")
+            if not mod_id or mod_id in results_by_id:
+                continue
+            results_by_id[mod_id] = _build_mod_search_result(mod_id, mod_info)
+
+    return list(results_by_id.values())
+
+
+def search_mods(query: str, game_ids: list[str] | None = None) -> list[ModSearchResult]:
+    normalized_query = query.strip()
+    if len(normalized_query) < 2:
+        raise RuntimeError("Enter at least 2 characters to search.")
+    if not config.curseforge_api_key:
+        raise RuntimeError("CURSEFORGE_API_KEY is required to search CurseForge.")
+
+    selected_game_ids = [game_id.strip() for game_id in (game_ids or []) if game_id.strip()]
+    if not selected_game_ids:
+        selected_game_ids = _configured_game_ids_from_cache()
+
+    return asyncio.run(_search_mods_async(normalized_query, selected_game_ids))
 
 
 def get_mod_names(mod_ids: list[str]) -> dict[str, str]:
