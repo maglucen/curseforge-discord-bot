@@ -9,21 +9,6 @@ from src.curseforge import CurseForgeAPI
 from src.release_embed import build_release_embed
 
 DEFAULT_REACTIONS = ["❤️"]
-
-
-def resolve_release_channel_id(mod_id: int) -> int:
-    try:
-        mod_index = config.mod_ids.index(mod_id)
-    except ValueError as exc:
-        raise RuntimeError(f"MOD_ID {mod_id} is not configured.") from exc
-
-    if mod_index < len(config.releases_channel_ids):
-        return config.releases_channel_ids[mod_index]
-    if config.releases_channel_ids:
-        return config.releases_channel_ids[0]
-    raise RuntimeError("No release channel is configured.")
-
-
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mod-id", type=int, required=True)
@@ -53,12 +38,13 @@ async def main() -> None:
         sys.exit(1)
 
     mod_info = await cf_api.get_mod_info(args.mod_id)
+    game_id = mod_info.get("gameId")
     embed = build_release_embed(mod_info, latest_file)
 
     if args.target == "debug":
         channel_id = config.debug_channel_id
     else:
-        channel_id = resolve_release_channel_id(args.mod_id)
+        channel_id = config.resolve_release_channel_id(args.mod_id, int(game_id) if game_id else None)
 
     intents = discord.Intents.default()
     client = discord.Client(intents=intents)
@@ -73,7 +59,7 @@ async def main() -> None:
                 return
 
             message = await channel.send(
-                content=config.message_tag or "",
+                content=config.resolve_message_tag(args.mod_id, int(game_id) if game_id else None) or "",
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions(roles=True, everyone=True),
             )

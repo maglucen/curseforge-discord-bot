@@ -1,9 +1,0 @@
-services:
-  bot:
-    build: .
-    volumes:
-      # Mount releases directory for persistent storage
-      - ./releases:/app/releases/
-    env_file:
-      - .env
-    restart: unless-stopped

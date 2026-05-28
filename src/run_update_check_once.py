@@ -9,28 +9,14 @@ from src.release_embed import build_release_embed
 from src.storage import ReleaseStorage
 
 DEFAULT_REACTIONS = ["❤️"]
-
-
-def resolve_release_channel_id(mod_id: int) -> int:
-    try:
-        mod_index = config.mod_ids.index(mod_id)
-    except ValueError as exc:
-        raise RuntimeError(f"MOD_ID {mod_id} is not configured.") from exc
-
-    if mod_index < len(config.releases_channel_ids):
-        return config.releases_channel_ids[mod_index]
-    if config.releases_channel_ids:
-        return config.releases_channel_ids[0]
-    raise RuntimeError("No release channel is configured.")
-
-
 async def send_release_message(
     client: discord.Client,
     mod_id: int,
     mod_info: dict,
     latest_file: dict,
 ) -> bool:
-    channel_id = resolve_release_channel_id(mod_id)
+    game_id = mod_info.get("gameId")
+    channel_id = config.resolve_release_channel_id(mod_id, int(game_id) if game_id else None)
     channel = client.get_channel(channel_id)
     if channel is None:
         print(f"Could not find channel with ID {channel_id} for mod {mod_id}.")
@@ -38,7 +24,7 @@ async def send_release_message(
 
     embed = build_release_embed(mod_info, latest_file)
     message = await channel.send(
-        content=config.message_tag or "",
+        content=config.resolve_message_tag(mod_id, int(game_id) if game_id else None) or "",
         embed=embed,
         allowed_mentions=discord.AllowedMentions(roles=True, everyone=True),
     )

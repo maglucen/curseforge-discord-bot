@@ -2,13 +2,15 @@
 setlocal
 cd /d "%~dp0.."
 
-if exist ".venv\Scripts\pythonw.exe" (
-    start "" ".\.venv\Scripts\pythonw.exe" -m src.manager_app
+set "VENV_DIR=.local\.venv"
+
+if exist "%VENV_DIR%\Scripts\pythonw.exe" (
+    start "" "%VENV_DIR%\Scripts\pythonw.exe" -m src.manager_app
     exit /b 0
 )
 
-if exist ".venv\Scripts\python.exe" (
-    start "" ".\.venv\Scripts\python.exe" -m src.manager_app
+if exist "%VENV_DIR%\Scripts\python.exe" (
+    start "" "%VENV_DIR%\Scripts\python.exe" -m src.manager_app
     exit /b 0
 )
 

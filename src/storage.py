@@ -4,7 +4,7 @@ from pathlib import Path
 import logging
 
 class ReleaseStorage:
-    def __init__(self, db_file: str = "releases/releases.db"):
+    def __init__(self, db_file: str = ".local/releases/releases.db"):
         logging.debug(f"Initializing ReleaseStorage with db_file: {db_file}")
         self.db_file = Path(db_file)
         # Ensure the parent directory exists

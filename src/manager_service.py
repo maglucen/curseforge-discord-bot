@@ -19,11 +19,13 @@ from src.storage import ReleaseStorage
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-VENV_PYTHON = ROOT_DIR / ".venv" / "Scripts" / "python.exe"
-PID_FILE = ROOT_DIR / "bot.pid"
-LOG_DIR = ROOT_DIR / "logs"
+LOCAL_DIR = ROOT_DIR / ".local"
+VENV_DIR = LOCAL_DIR / ".venv"
+VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
+PID_FILE = LOCAL_DIR / "bot.pid"
+LOG_DIR = LOCAL_DIR / "logs"
 LOG_FILE = LOG_DIR / "bot.log"
-RELEASES_DIR = ROOT_DIR / "releases"
+RELEASES_DIR = LOCAL_DIR / "releases"
 RELEASES_DB = RELEASES_DIR / "releases.db"
 MANAGER_CONTROL_HOST = "127.0.0.1"
 MANAGER_CONTROL_PORT = 47831
@@ -65,7 +67,12 @@ class ReleaseRecord:
 class ModReleaseSummary:
     mod_id: str
     mod_name: str
+    game_id: str
+    game_name: str
     release_channel_id: str
+    message_tag: str
+    release_channel_override: str
+    message_tag_override: str
     following: bool
     curseforge_updated_at: str
     download_count: int
@@ -103,6 +110,7 @@ class DashboardStats:
 
 
 def ensure_runtime_dirs() -> None:
+    LOCAL_DIR.mkdir(exist_ok=True)
     LOG_DIR.mkdir(exist_ok=True)
     RELEASES_DIR.mkdir(exist_ok=True)
 
@@ -163,6 +171,60 @@ def _parse_bool(value: str, default: bool = False) -> bool:
     return value.strip().lower() == "true"
 
 
+def _parse_mod_text_map(raw_value: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for item in raw_value.split(";"):
+        entry = item.strip()
+        if not entry or ":" not in entry:
+            continue
+        mod_id, value = entry.split(":", 1)
+        mod_id = mod_id.strip()
+        value = value.strip()
+        if mod_id:
+            mapping[mod_id] = value
+    return mapping
+
+
+def _serialize_mod_text_map(mapping: dict[str, str]) -> str:
+    return ";".join(
+        f"{mod_id}:{value}"
+        for mod_id, value in mapping.items()
+        if mod_id.strip()
+    )
+
+
+def _normalize_message_tag_value(value: str) -> str:
+    normalized = value.strip()
+    if normalized.isdigit():
+        return f"<@&{normalized}>"
+    return normalized
+
+
+def _parse_keyed_int_map(raw_value: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for item in raw_value.split(";"):
+        entry = item.strip()
+        if not entry or ":" not in entry:
+            continue
+        key, value = entry.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            mapping[key] = value
+    return mapping
+
+
+KNOWN_GAME_NAMES_BY_ID = {
+    "83374": "ARK: Survival Ascended",
+}
+
+KNOWN_GAME_NAMES_BY_SLUG = {
+    "ark-survival-ascended": "ARK: Survival Ascended",
+    "subnautica": "Subnautica",
+    "subnautica-below-zero": "Subnautica: Below Zero",
+}
+
+
 def get_editable_settings() -> EditableSettings:
     env_values = read_env_values()
     return EditableSettings(
@@ -189,7 +251,7 @@ def save_editable_settings(settings: EditableSettings) -> None:
 
     _set_env_values(
         {
-            "MESSAGE_TAG": settings.message_tag,
+            "MESSAGE_TAG": _normalize_message_tag_value(settings.message_tag),
             "DEBUG_CHANNEL_ID": debug_channel_id,
             "ANNOUNCE_MESSAGES": "true" if settings.announce_messages else "false",
             "ADD_REACTIONS": "true" if settings.add_reactions else "false",
@@ -208,6 +270,26 @@ def get_release_channel_ids() -> list[str]:
     env_values = read_env_values()
     raw_channel_ids = env_values.get("RELEASES_CHANNEL_IDS", "")
     return [channel_id.strip() for channel_id in raw_channel_ids.split(",") if channel_id.strip()]
+
+
+def get_game_release_channel_ids() -> dict[str, str]:
+    env_values = read_env_values()
+    return _parse_keyed_int_map(env_values.get("GAME_RELEASE_CHANNEL_IDS", ""))
+
+
+def get_mod_release_channel_ids() -> dict[str, str]:
+    env_values = read_env_values()
+    return _parse_keyed_int_map(env_values.get("MOD_RELEASE_CHANNEL_IDS", ""))
+
+
+def get_mod_message_tags() -> dict[str, str]:
+    env_values = read_env_values()
+    return _parse_mod_text_map(env_values.get("MOD_MESSAGE_TAGS", ""))
+
+
+def get_game_message_tags() -> dict[str, str]:
+    env_values = read_env_values()
+    return _parse_mod_text_map(env_values.get("GAME_MESSAGE_TAGS", ""))
 
 
 def get_following_mod_ids() -> list[str]:
@@ -229,13 +311,69 @@ def _build_comments_url(website_url: str) -> str:
     return website_url.rstrip("/") + "/comments"
 
 
+def _derive_game_name(game_id: str, website_url: str) -> str:
+    if game_id in KNOWN_GAME_NAMES_BY_ID:
+        return KNOWN_GAME_NAMES_BY_ID[game_id]
+
+    if website_url:
+        path_parts = [part for part in urlparse(website_url).path.split("/") if part]
+        if path_parts:
+            slug = path_parts[0].strip().lower()
+            if slug in KNOWN_GAME_NAMES_BY_SLUG:
+                return KNOWN_GAME_NAMES_BY_SLUG[slug]
+            if slug:
+                return " ".join(part.upper() if len(part) <= 3 else part.capitalize() for part in slug.split("-"))
+
+    return f"Game {game_id}" if game_id else "Unknown game"
+
+
+def _resolve_release_channel_for_mod(
+    mod_id: str,
+    game_id: str,
+    configured_mod_ids: list[str],
+    release_channel_ids: list[str],
+    mod_release_channel_ids: dict[str, str],
+    game_release_channel_ids: dict[str, str],
+) -> str:
+    if mod_id in mod_release_channel_ids:
+        return mod_release_channel_ids[mod_id]
+    if game_id and game_id in game_release_channel_ids:
+        return game_release_channel_ids[game_id]
+    try:
+        mod_index = configured_mod_ids.index(mod_id)
+    except ValueError:
+        mod_index = -1
+    if 0 <= mod_index < len(release_channel_ids):
+        return release_channel_ids[mod_index]
+    if release_channel_ids:
+        return release_channel_ids[0]
+    return ""
+
+
+def _resolve_message_tag_for_mod(
+    mod_id: str,
+    game_id: str,
+    mod_message_tags: dict[str, str],
+    game_message_tags: dict[str, str],
+) -> str:
+    if mod_id in mod_message_tags:
+        return mod_message_tags[mod_id]
+    if game_id and game_id in game_message_tags:
+        return game_message_tags[game_id]
+    return config.message_tag
+
+
 def _cache_mod_info(mod_id: str, mod_info: dict) -> str:
     mod_name = str(mod_info.get("name") or mod_id)
     updated_at = str(mod_info.get("dateModified") or mod_info.get("dateReleased") or "")
+    game_id = str(mod_info.get("gameId") or "")
     links = mod_info.get("links") or {}
     website_url = str(links.get("websiteUrl") or "")
+    game_name = _derive_game_name(game_id, website_url)
     cached_info = {
         "mod_name": mod_name,
+        "game_id": game_id,
+        "game_name": game_name,
         "curseforge_updated_at": updated_at,
         "download_count": int(mod_info.get("downloadCount") or 0),
         "thumbs_up_count": int(mod_info.get("thumbsUpCount") or 0),
@@ -315,22 +453,27 @@ def add_tracked_mod(mod_id: str, release_channel_id: str | None = None) -> str:
         for channel_id in env_values.get("RELEASES_CHANNEL_IDS", "").split(",")
         if channel_id.strip()
     ]
+    game_release_channel_ids = get_game_release_channel_ids()
     following_mod_ids = get_following_mod_ids()
 
     channel_to_add = (release_channel_id or "").strip()
-    if channel_to_add:
-        if not channel_to_add.isdigit():
-            raise RuntimeError("Release channel ID must be numeric.")
-    elif release_channels:
-        channel_to_add = release_channels[0]
-    else:
-        raise RuntimeError("Release channel ID is required because no release channels are configured yet.")
+    if channel_to_add and not channel_to_add.isdigit():
+        raise RuntimeError("Release channel ID must be numeric.")
 
     try:
         mod_info = asyncio.run(_fetch_mod_info_async(mod_id))
         mod_name = _cache_mod_info(mod_id, mod_info)
     except Exception as exc:
         raise RuntimeError(f"Failed to validate MOD_ID {mod_id} against CurseForge.") from exc
+
+    game_id = str(mod_info.get("gameId") or "")
+    if not channel_to_add:
+        if game_id and game_id in game_release_channel_ids:
+            channel_to_add = game_release_channel_ids[game_id]
+        elif release_channels:
+            channel_to_add = release_channels[0]
+        else:
+            raise RuntimeError("Release channel ID is required because no release channels are configured yet.")
 
     mod_ids.append(mod_id)
     release_channels.append(channel_to_add)
@@ -357,6 +500,10 @@ def remove_tracked_mod(mod_id: str) -> bool:
         if channel_id.strip()
     ]
     following_mod_ids = [current_mod_id for current_mod_id in get_following_mod_ids() if current_mod_id != mod_id]
+    mod_release_channel_ids = get_mod_release_channel_ids()
+    mod_message_tags = get_mod_message_tags()
+    mod_release_channel_ids.pop(mod_id, None)
+    mod_message_tags.pop(mod_id, None)
 
     mod_index = mod_ids.index(mod_id)
     del mod_ids[mod_index]
@@ -368,6 +515,8 @@ def remove_tracked_mod(mod_id: str) -> bool:
             "MOD_IDS": ",".join(mod_ids),
             "RELEASES_CHANNEL_IDS": ",".join(release_channels),
             "FOLLOWING_MOD_IDS": ",".join(following_mod_ids),
+            "MOD_RELEASE_CHANNEL_IDS": _serialize_mod_text_map(mod_release_channel_ids),
+            "MOD_MESSAGE_TAGS": _serialize_mod_text_map(mod_message_tags),
         }
     )
     return True
@@ -389,6 +538,96 @@ def set_mod_following(mod_id: str, following: bool) -> bool:
     return True
 
 
+def set_mod_release_channel(mod_id: str, release_channel_id: str) -> bool:
+    mod_ids = get_configured_mod_ids()
+    if mod_id not in mod_ids:
+        return False
+    if not release_channel_id.strip().isdigit():
+        raise RuntimeError("Release channel ID must be numeric.")
+
+    release_channels = get_release_channel_ids()
+    mod_index = mod_ids.index(mod_id)
+    while len(release_channels) <= mod_index:
+        if release_channels:
+            release_channels.append(release_channels[0])
+        else:
+            release_channels.append("")
+    release_channels[mod_index] = release_channel_id.strip()
+    _set_env_values({"RELEASES_CHANNEL_IDS": ",".join(release_channels)})
+    return True
+
+
+def set_mod_release_channel_override(mod_id: str, release_channel_id: str) -> bool:
+    mod_ids = get_configured_mod_ids()
+    if mod_id not in mod_ids:
+        return False
+    if not release_channel_id.strip().isdigit():
+        raise RuntimeError("Release channel ID must be numeric.")
+
+    overrides = get_mod_release_channel_ids()
+    overrides[mod_id] = release_channel_id.strip()
+    _set_env_values({"MOD_RELEASE_CHANNEL_IDS": _serialize_mod_text_map(overrides)})
+    return True
+
+
+def clear_mod_release_channel_override(mod_id: str) -> bool:
+    mod_ids = get_configured_mod_ids()
+    if mod_id not in mod_ids:
+        return False
+
+    overrides = get_mod_release_channel_ids()
+    overrides.pop(mod_id, None)
+    _set_env_values({"MOD_RELEASE_CHANNEL_IDS": _serialize_mod_text_map(overrides)})
+    return True
+
+
+def set_mod_message_tag(mod_id: str, message_tag: str) -> bool:
+    mod_ids = get_configured_mod_ids()
+    if mod_id not in mod_ids:
+        return False
+
+    mod_message_tags = get_mod_message_tags()
+    normalized = _normalize_message_tag_value(message_tag)
+    if normalized:
+        mod_message_tags[mod_id] = normalized
+    else:
+        mod_message_tags.pop(mod_id, None)
+
+    _set_env_values({"MOD_MESSAGE_TAGS": _serialize_mod_text_map(mod_message_tags)})
+    return True
+
+
+def save_game_defaults(game_release_channel_ids: dict[str, str], game_message_tags: dict[str, str]) -> None:
+    normalized_channels: dict[str, str] = {}
+    for game_id, channel_id in game_release_channel_ids.items():
+        game_id = game_id.strip()
+        channel_id = channel_id.strip()
+        if not game_id:
+            continue
+        if channel_id:
+            if not game_id.isdigit() or not channel_id.isdigit():
+                raise RuntimeError("Per-game release channel IDs must be numeric.")
+            normalized_channels[game_id] = channel_id
+
+    normalized_tags: dict[str, str] = {}
+    for game_id, tag in game_message_tags.items():
+        game_id = game_id.strip()
+        if not game_id:
+            continue
+        normalized_tag = _normalize_message_tag_value(tag)
+        if normalized_tag:
+            if not game_id.isdigit():
+                raise RuntimeError("Per-game message tag keys must be numeric game IDs.")
+            normalized_tags[game_id] = normalized_tag
+
+    _set_env_values(
+        {
+            "GAME_RELEASE_CHANNEL_IDS": _serialize_mod_text_map(normalized_channels),
+            "GAME_MESSAGE_TAGS": _serialize_mod_text_map(normalized_tags),
+        }
+    )
+
+
 def list_tracked_releases() -> list[ModReleaseSummary]:
     configured_mod_ids = get_configured_mod_ids()
     if not configured_mod_ids:
@@ -396,6 +635,10 @@ def list_tracked_releases() -> list[ModReleaseSummary]:
 
     mod_names = get_mod_names(configured_mod_ids)
     release_channel_ids = get_release_channel_ids()
+    game_release_channel_ids = get_game_release_channel_ids()
+    mod_release_channel_ids = get_mod_release_channel_ids()
+    game_message_tags = get_game_message_tags()
+    mod_message_tags = get_mod_message_tags()
     following_mod_ids = set(get_following_mod_ids())
     storage = ReleaseStorage(str(RELEASES_DB))
     rows = storage.get_all_releases()
@@ -409,11 +652,30 @@ def list_tracked_releases() -> list[ModReleaseSummary]:
     summaries: list[ModReleaseSummary] = []
     for index, mod_id in enumerate(configured_mod_ids):
         cached_info = get_mod_cached_info(mod_id)
+        game_id = str(cached_info.get("game_id", ""))
+        game_name = str(cached_info.get("game_name", "Unknown game"))
         summaries.append(
             ModReleaseSummary(
                 mod_id=mod_id,
                 mod_name=str(cached_info.get("mod_name", mod_names.get(mod_id, mod_id))),
-                release_channel_id=release_channel_ids[index] if index < len(release_channel_ids) else "",
+                game_id=game_id,
+                game_name=game_name,
+                release_channel_id=_resolve_release_channel_for_mod(
+                    mod_id,
+                    game_id,
+                    configured_mod_ids,
+                    release_channel_ids,
+                    mod_release_channel_ids,
+                    game_release_channel_ids,
+                ),
+                message_tag=_resolve_message_tag_for_mod(
+                    mod_id,
+                    game_id,
+                    mod_message_tags,
+                    game_message_tags,
+                ),
+                release_channel_override=mod_release_channel_ids.get(mod_id, ""),
+                message_tag_override=mod_message_tags.get(mod_id, ""),
                 following=mod_id in following_mod_ids,
                 curseforge_updated_at=str(cached_info.get("curseforge_updated_at", get_mod_updated_at(mod_id))),
                 download_count=int(cached_info.get("download_count", 0)),
@@ -633,7 +895,7 @@ def setup_environment(callback: Callable[[str], None]) -> int:
 
     if not VENV_PYTHON.exists():
         callback("Creating virtual environment...")
-        code = stream_command([bootstrap_python, "-m", "venv", ".venv"], callback)
+        code = stream_command([bootstrap_python, "-m", "venv", str(VENV_DIR)], callback)
         if code != 0:
             return code
     else:

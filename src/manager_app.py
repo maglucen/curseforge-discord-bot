@@ -10,6 +10,7 @@ import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+from tkinter import simpledialog
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
@@ -17,8 +18,8 @@ from src import manager_service
 
 
 APP_ID = "Maglucen.CurseForgeDiscordBot.Manager"
-WINDOW_GEOMETRY_FILE = manager_service.ROOT_DIR / "tools" / "manager-window-geometry.txt"
-UI_STATE_FILE = manager_service.ROOT_DIR / "tools" / "manager-ui-state.json"
+WINDOW_GEOMETRY_FILE = manager_service.LOCAL_DIR / "manager-window-geometry.txt"
+UI_STATE_FILE = manager_service.LOCAL_DIR / "manager-ui-state.json"
 BG = "#0F1117"
 PANEL = "#171A22"
 PANEL_ALT = "#11141B"
@@ -36,12 +37,12 @@ BUTTON_PRESSED = "#2D384C"
 MOD_COLUMN_LABELS = {
     "following": "Following",
     "mod_name": "Mod",
+    "game_name": "Game",
     "mod_id": "MOD_ID",
     "download_count": "Downloads",
     "curseforge_updated_at": "CurseForge Updated",
     "latest_version": "Latest Stored",
     "latest_date": "Stored At",
-    "count": "Versions",
 }
 VERSION_COLUMN_LABELS = {
     "version": "Version",
@@ -118,7 +119,15 @@ class RoundedSurface(tk.Frame):
         self._padding = padding
         self._radius = radius
         self._border_width = border_width
-        self.canvas = tk.Canvas(self, bg=parent_bg, bd=0, highlightthickness=0, relief="flat")
+        self.canvas = tk.Canvas(
+            self,
+            bg=parent_bg,
+            bd=0,
+            highlightthickness=0,
+            relief="flat",
+            width=1,
+            height=1,
+        )
         self.canvas.pack(fill="both", expand=True)
         self.body = tk.Frame(self.canvas, bg=bg_fill, bd=0, highlightthickness=0)
         self._body_window = self.canvas.create_window(0, 0, anchor="nw", window=self.body)
@@ -128,12 +137,18 @@ class RoundedSurface(tk.Frame):
     def _on_body_configure(self, _event=None) -> None:
         requested_width = self.body.winfo_reqwidth() + ((self._padding + self._border_width) * 2)
         requested_height = self.body.winfo_reqheight() + ((self._padding + self._border_width) * 2)
-        self.canvas.configure(width=requested_width, height=requested_height)
+        if self.canvas.winfo_width() <= 2:
+            self.canvas.configure(width=requested_width)
+        self.canvas.configure(height=requested_height)
         self._redraw()
 
     def _redraw(self, _event=None) -> None:
-        width = max(self.canvas.winfo_width(), self.body.winfo_reqwidth() + ((self._padding + self._border_width) * 2))
-        height = max(self.canvas.winfo_height(), self.body.winfo_reqheight() + ((self._padding + self._border_width) * 2))
+        requested_width = self.body.winfo_reqwidth() + ((self._padding + self._border_width) * 2)
+        requested_height = self.body.winfo_reqheight() + ((self._padding + self._border_width) * 2)
+        width = self.canvas.winfo_width()
+        if width <= 2:
+            width = requested_width
+        height = max(self.canvas.winfo_height(), requested_height)
         self.canvas.delete("surface")
         outer_points = _rounded_rect_points(0, 0, width, height, self._radius)
         self.canvas.create_polygon(
@@ -283,6 +298,7 @@ class BotManagerApp:
         self._control_server_socket: socket.socket | None = None
         self._control_stop_event = threading.Event()
         self._geometry_save_after_id: str | None = None
+        manager_service.ensure_runtime_dirs()
         self._set_window_icon()
         self._restore_window_geometry()
         ui_state = self._load_ui_state()
@@ -308,6 +324,10 @@ class BotManagerApp:
         self.setting_announce_messages = tk.BooleanVar(value=current_settings.announce_messages)
         self.setting_add_reactions = tk.BooleanVar(value=current_settings.add_reactions)
         self.setting_check_interval_minutes = tk.StringVar(value=current_settings.check_interval_minutes)
+        self.game_release_channel_vars: dict[str, tk.StringVar] = {}
+        self.game_message_tag_vars: dict[str, tk.StringVar] = {}
+        self.game_name_by_id: dict[str, str] = {}
+        self.game_defaults_frame: tk.Frame | None = None
         self.last_log_snapshot = ""
         self.last_log_signature: tuple[bool, int] | None = None
         self.release_summaries: list[manager_service.ModReleaseSummary] = []
@@ -904,50 +924,53 @@ class BotManagerApp:
         mod_editor = tk.Frame(releases_content, bg=CONTROL_ALT)
         mod_editor.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         mod_editor.columnconfigure(1, weight=1)
-        mod_editor.columnconfigure(3, weight=1)
-        ttk.Label(mod_editor, text="New MOD_ID", style="Panel.TLabel").pack(side="left")
-        self._create_entry(mod_editor, textvariable=self.new_mod_id, width=18).pack(side="left", padx=(8, 12), fill="x", expand=True)
-        ttk.Label(mod_editor, text="Release Channel ID", style="Panel.TLabel").pack(side="left")
-        self._create_entry(mod_editor, textvariable=self.new_release_channel_id, width=22).pack(side="left", padx=(8, 12), fill="x", expand=True)
-        self._create_button(mod_editor, text="Add Mod", command=self._add_mod, accent=True).pack(side="left")
-        self._create_button(mod_editor, text="Remove Selected Mod", command=self._remove_selected_mod).pack(side="left", padx=(8, 0))
+        mod_editor.columnconfigure(2, weight=0)
+        mod_editor.columnconfigure(3, weight=0)
+        ttk.Label(mod_editor, text="New MOD_ID", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
+        self._create_entry(mod_editor, textvariable=self.new_mod_id, width=18).grid(row=0, column=1, sticky="ew", padx=(8, 12))
+        self._create_button(mod_editor, text="Add Mod", command=self._add_mod, accent=True).grid(row=0, column=2, sticky="ew")
+        self._create_button(mod_editor, text="Remove Selected Mod", command=self._remove_selected_mod).grid(row=0, column=3, sticky="ew", padx=(8, 0))
 
         tracked_outer, tracked_mods_pane = self._create_surface(releases_content, bg=PANEL_ALT, padding=18)
         tracked_outer.grid(row=2, column=0, sticky="nsew")
         tracked_mods_pane.columnconfigure(0, weight=1)
+        tracked_mods_pane.columnconfigure(1, weight=0)
         tracked_mods_pane.rowconfigure(1, weight=1)
 
         tk.Label(tracked_mods_pane, text="Tracked mods", bg=PANEL_ALT, fg=TEXT, font=("Segoe UI Semibold", 18)).grid(row=0, column=0, sticky="nw")
         self.mods_tree = ttk.Treeview(
             tracked_mods_pane,
-            columns=("following", "mod_name", "mod_id", "download_count", "curseforge_updated_at", "latest_version", "latest_date", "count"),
+            columns=("following", "mod_name", "game_name", "mod_id", "download_count", "curseforge_updated_at", "latest_version", "latest_date"),
             show="headings",
             height=8,
         )
         self.mods_tree.grid(row=1, column=0, sticky="nsew", pady=(8, 8))
         self.mods_tree.heading("following", text="Following", command=lambda: self._sort_mods_by("following"))
         self.mods_tree.heading("mod_name", text="Mod", command=lambda: self._sort_mods_by("mod_name"))
+        self.mods_tree.heading("game_name", text="Game", command=lambda: self._sort_mods_by("game_name"))
         self.mods_tree.heading("mod_id", text="MOD_ID", command=lambda: self._sort_mods_by("mod_id"))
         self.mods_tree.heading("download_count", text="Downloads", command=lambda: self._sort_mods_by("download_count"))
         self.mods_tree.heading("curseforge_updated_at", text="CurseForge Updated", command=lambda: self._sort_mods_by("curseforge_updated_at"))
         self.mods_tree.heading("latest_version", text="Latest Stored", command=lambda: self._sort_mods_by("latest_version"))
         self.mods_tree.heading("latest_date", text="Stored At", command=lambda: self._sort_mods_by("latest_date"))
-        self.mods_tree.heading("count", text="Versions", command=lambda: self._sort_mods_by("count"))
         self.mods_tree.column("following", width=88, anchor="center")
-        self.mods_tree.column("mod_name", width=260, anchor="w")
+        self.mods_tree.column("mod_name", width=240, anchor="w")
+        self.mods_tree.column("game_name", width=170, anchor="w")
         self.mods_tree.column("mod_id", width=110, anchor="w")
         self.mods_tree.column("download_count", width=100, anchor="e")
         self.mods_tree.column("curseforge_updated_at", width=170, anchor="w")
         self.mods_tree.column("latest_version", width=120, anchor="w")
         self.mods_tree.column("latest_date", width=160, anchor="w")
-        self.mods_tree.column("count", width=84, anchor="center")
         self.mods_tree.bind("<<TreeviewSelect>>", self._on_mod_selected)
         self.mods_tree.bind("<Button-1>", self._on_mod_tree_click, add="+")
         self.mods_tree.bind("<Button-3>", self._show_mod_context_menu)
 
+        self.mods_tree_yscroll = ttk.Scrollbar(tracked_mods_pane, orient="vertical", command=self.mods_tree.yview)
+        self.mods_tree.configure(yscrollcommand=self.mods_tree_yscroll.set)
+        self.mods_tree_yscroll.grid(row=1, column=1, sticky="ns", pady=(8, 8), padx=(8, 0))
         self.mods_tree_xscroll = ttk.Scrollbar(tracked_mods_pane, orient="horizontal", command=self.mods_tree.xview)
         self.mods_tree.configure(xscrollcommand=self.mods_tree_xscroll.set)
-        self.mods_tree_xscroll.grid(row=2, column=0, sticky="ew")
+        self.mods_tree_xscroll.grid(row=2, column=0, columnspan=2, sticky="ew")
 
         self.mod_context_menu = tk.Menu(
             self.root,
@@ -961,10 +984,14 @@ class BotManagerApp:
         )
         self.mod_context_menu.add_command(label="Copy MOD_ID", command=self._copy_selected_mod_id)
         self.mod_context_menu.add_command(label="Copy Release Channel ID", command=self._copy_selected_release_channel_id)
-        self.mod_context_menu.add_command(label="Use Release Channel ID For New Mod", command=self._use_selected_release_channel_id)
         self.mod_context_menu.add_separator()
         self.mod_context_menu.add_command(label="View Stored Versions", command=self._open_selected_versions_window)
         self.mod_context_menu.add_command(label="Forget Latest Stored Version", command=self._forget_latest_stored_version)
+        self.mod_context_menu.add_separator()
+        self.mod_context_menu.add_command(label="Set Specific Release Channel Override", command=self._set_selected_mod_release_channel_override)
+        self.mod_context_menu.add_command(label="Clear Specific Release Channel Override", command=self._clear_selected_mod_release_channel_override)
+        self.mod_context_menu.add_command(label="Set Specific Message Tag Override", command=self._set_selected_mod_message_tag_override)
+        self.mod_context_menu.add_command(label="Clear Specific Message Tag Override", command=self._clear_selected_mod_message_tag_override)
         self.mod_context_menu.add_separator()
         self.mod_context_menu.add_command(label="Open CurseForge Page", command=self._open_selected_public_page)
         self.mod_context_menu.add_command(label="Open Author Files", command=self._open_selected_author_files_page)
@@ -986,14 +1013,25 @@ class BotManagerApp:
         self._create_entry(settings_content, textvariable=self.setting_check_interval_minutes).grid(row=2, column=1, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(settings_content, text="Publish announcement messages", variable=self.setting_announce_messages).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 6))
         ttk.Checkbutton(settings_content, text="Add reactions", variable=self.setting_add_reactions).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 12))
-        self._create_button(settings_content, text="Save Settings", command=self._save_settings, accent=True).grid(row=5, column=0, sticky="w")
+        tk.Label(
+            settings_content,
+            text="Per-game defaults",
+            bg=CONTROL_ALT,
+            fg=TEXT,
+            font=("Segoe UI Semibold", 16),
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(22, 10))
+        self.game_defaults_frame = tk.Frame(settings_content, bg=CONTROL_ALT)
+        self.game_defaults_frame.grid(row=6, column=0, columnspan=2, sticky="ew")
+        self.game_defaults_frame.columnconfigure(1, weight=1)
+        self.game_defaults_frame.columnconfigure(2, weight=1)
+        self._create_button(settings_content, text="Save Settings", command=self._save_settings, accent=True).grid(row=7, column=0, sticky="w", pady=(16, 0))
         tk.Label(
             settings_content,
             text="Restart the bot after saving settings to apply them.",
             bg=CONTROL_ALT,
             fg=MUTED,
             font=("Segoe UI", 10),
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         stats_panel, stats_content = self._create_panel(
             stats_tab,
@@ -1063,12 +1101,12 @@ class BotManagerApp:
                 values=(
                     "\u2611" if summary.following else "\u2610",
                     summary.mod_name,
+                    summary.game_name,
                     summary.mod_id,
                     summary.download_count,
                     self._format_curseforge_date(summary.curseforge_updated_at),
                     summary.latest_version,
                     summary.latest_date,
-                    len(summary.versions),
                 ),
             )
 
@@ -1077,6 +1115,7 @@ class BotManagerApp:
         elif self.release_summaries:
             self.mods_tree.selection_set(f"mod:{self.release_summaries[0].mod_id}")
 
+        self._render_game_defaults()
         self._refresh_stats_view()
 
     def _refresh_stats_view(self) -> None:
@@ -1105,6 +1144,87 @@ class BotManagerApp:
 
     def _on_mod_selected(self, _event=None) -> None:
         return
+
+    def _render_game_defaults(self) -> None:
+        if self.game_defaults_frame is None:
+            return
+
+        for child in self.game_defaults_frame.winfo_children():
+            child.destroy()
+
+        unique_games: dict[str, str] = {}
+        for summary in self.release_summaries:
+            if summary.game_id:
+                unique_games[summary.game_id] = summary.game_name
+
+        if not unique_games:
+            tk.Label(
+                self.game_defaults_frame,
+                text="No games detected yet from tracked mods.",
+                bg=CONTROL_ALT,
+                fg=MUTED,
+                font=("Segoe UI", 10),
+            ).grid(row=0, column=0, sticky="w")
+            return
+
+        current_game_channels = manager_service.get_game_release_channel_ids()
+        current_game_tags = manager_service.get_game_message_tags()
+
+        for game_id, game_name in sorted(unique_games.items(), key=lambda item: item[1].lower()):
+            self.game_name_by_id[game_id] = game_name
+            if game_id not in self.game_release_channel_vars:
+                self.game_release_channel_vars[game_id] = tk.StringVar(value=current_game_channels.get(game_id, ""))
+            if game_id not in self.game_message_tag_vars:
+                self.game_message_tag_vars[game_id] = tk.StringVar(value=current_game_tags.get(game_id, ""))
+
+        active_game_ids = set(unique_games)
+        self.game_release_channel_vars = {
+            game_id: var for game_id, var in self.game_release_channel_vars.items() if game_id in active_game_ids
+        }
+        self.game_message_tag_vars = {
+            game_id: var for game_id, var in self.game_message_tag_vars.items() if game_id in active_game_ids
+        }
+
+        tk.Label(
+            self.game_defaults_frame,
+            text="Game",
+            bg=CONTROL_ALT,
+            fg=MUTED,
+            font=("Segoe UI Semibold", 10),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        tk.Label(
+            self.game_defaults_frame,
+            text="Release Channel ID",
+            bg=CONTROL_ALT,
+            fg=MUTED,
+            font=("Segoe UI Semibold", 10),
+        ).grid(row=0, column=1, sticky="w", padx=(8, 18), pady=(0, 8))
+        tk.Label(
+            self.game_defaults_frame,
+            text="Message Tag",
+            bg=CONTROL_ALT,
+            fg=MUTED,
+            font=("Segoe UI Semibold", 10),
+        ).grid(row=0, column=2, sticky="w", padx=(0, 8), pady=(0, 8))
+
+        for row, (game_id, game_name) in enumerate(sorted(unique_games.items(), key=lambda item: item[1].lower()), start=1):
+            tk.Label(
+                self.game_defaults_frame,
+                text=f"{game_name} ({game_id})",
+                bg=CONTROL_ALT,
+                fg=TEXT,
+                font=("Segoe UI Semibold", 10),
+            ).grid(row=row, column=0, sticky="w", pady=(0, 8))
+            self._create_entry(
+                self.game_defaults_frame,
+                textvariable=self.game_release_channel_vars[game_id],
+                width=22,
+            ).grid(row=row, column=1, sticky="ew", padx=(8, 18), pady=(0, 8))
+            self._create_entry(
+                self.game_defaults_frame,
+                textvariable=self.game_message_tag_vars[game_id],
+                width=28,
+            ).grid(row=row, column=2, sticky="ew", padx=(0, 0), pady=(0, 8))
 
     def _on_mod_tree_click(self, event):
         row_id = self.mods_tree.identify_row(event.y)
@@ -1217,6 +1337,8 @@ class BotManagerApp:
                 return 1 if summary.following else 0
             if self.mod_sort_column == "mod_name":
                 return summary.mod_name.lower()
+            if self.mod_sort_column == "game_name":
+                return summary.game_name.lower()
             if self.mod_sort_column == "mod_id":
                 return int(summary.mod_id) if summary.mod_id.isdigit() else summary.mod_id
             if self.mod_sort_column == "download_count":
@@ -1227,8 +1349,6 @@ class BotManagerApp:
                 return int(summary.latest_version) if summary.latest_version.isdigit() else summary.latest_version
             if self.mod_sort_column == "latest_date":
                 return summary.latest_date
-            if self.mod_sort_column == "count":
-                return len(summary.versions)
             return summary.mod_name.lower()
 
         return sorted(summaries, key=key, reverse=self.mod_sort_direction == "desc")
@@ -1313,6 +1433,92 @@ class BotManagerApp:
             return
         self._copy_to_clipboard(summary.release_channel_id)
         self._set_notice(f"Copied release channel ID: {summary.release_channel_id}")
+
+    def _set_selected_mod_release_channel_override(self) -> None:
+        summary = self._selected_summary()
+        if summary is None:
+            self._append_output("Select a mod first.")
+            return
+
+        value = simpledialog.askstring(
+            "Specific Release Channel Override",
+            f"Release channel override for {summary.mod_name} ({summary.mod_id}):",
+            initialvalue=summary.release_channel_override or summary.release_channel_id,
+            parent=self.root,
+        )
+        if value is None:
+            return
+        release_channel_id = value.strip()
+        if not release_channel_id:
+            self._append_output("Release channel override cannot be empty. Use clear override instead.")
+            return
+
+        def task() -> None:
+            updated = manager_service.set_mod_release_channel_override(summary.mod_id, release_channel_id)
+            if not updated:
+                raise RuntimeError("The selected mod is no longer configured.")
+            self.events.put(("output", f"Specific release channel override set for {summary.mod_name} ({summary.mod_id}) -> {release_channel_id}."))
+            self.events.put(("toast", ("Releases", f"Specific release channel override saved for {summary.mod_name}. Restart the bot to apply it.")))
+
+        self._run_action("Set Mod Release Channel Override", task)
+
+    def _clear_selected_mod_release_channel_override(self) -> None:
+        summary = self._selected_summary()
+        if summary is None:
+            self._append_output("Select a mod first.")
+            return
+
+        def task() -> None:
+            updated = manager_service.clear_mod_release_channel_override(summary.mod_id)
+            if not updated:
+                raise RuntimeError("The selected mod is no longer configured.")
+            self.events.put(("output", f"Specific release channel override cleared for {summary.mod_name} ({summary.mod_id})."))
+            self.events.put(("toast", ("Releases", f"Specific release channel override cleared for {summary.mod_name}. Restart the bot to apply it.")))
+
+        self._run_action("Clear Mod Release Channel Override", task)
+
+    def _set_selected_mod_message_tag_override(self) -> None:
+        summary = self._selected_summary()
+        if summary is None:
+            self._append_output("Select a mod first.")
+            return
+
+        value = simpledialog.askstring(
+            "Specific Message Tag Override",
+            f"Message tag override for {summary.mod_name} ({summary.mod_id}):",
+            initialvalue=summary.message_tag_override or summary.message_tag,
+            parent=self.root,
+        )
+        if value is None:
+            return
+        message_tag = value.strip()
+        if not message_tag:
+            self._append_output("Message tag override cannot be empty. Use clear override instead.")
+            return
+
+        def task() -> None:
+            updated = manager_service.set_mod_message_tag(summary.mod_id, message_tag)
+            if not updated:
+                raise RuntimeError("The selected mod is no longer configured.")
+            self.events.put(("output", f"Specific message tag override set for {summary.mod_name} ({summary.mod_id}) -> {message_tag}."))
+            self.events.put(("toast", ("Releases", f"Specific message tag override saved for {summary.mod_name}. Restart the bot to apply it.")))
+
+        self._run_action("Set Mod Message Tag Override", task)
+
+    def _clear_selected_mod_message_tag_override(self) -> None:
+        summary = self._selected_summary()
+        if summary is None:
+            self._append_output("Select a mod first.")
+            return
+
+        def task() -> None:
+            updated = manager_service.set_mod_message_tag(summary.mod_id, "")
+            if not updated:
+                raise RuntimeError("The selected mod is no longer configured.")
+            self.events.put(("output", f"Specific message tag override cleared for {summary.mod_name} ({summary.mod_id})."))
+            self.events.put(("toast", ("Releases", f"Specific message tag override cleared for {summary.mod_name}. Restart the bot to apply it.")))
+
+        self._run_action("Clear Mod Message Tag Override", task)
 
     def _use_selected_release_channel_id(self) -> None:
         summary = self._selected_summary()
@@ -1586,7 +1792,6 @@ class BotManagerApp:
                 self._set_notice(f"{title}: {message}")
             elif event_type == "clear_add_inputs":
                 self.new_mod_id.set("")
-                self.new_release_channel_id.set("")
 
         self.root.after(200, self._process_events)
 
@@ -1683,6 +1888,10 @@ class BotManagerApp:
                     check_interval_minutes=self.setting_check_interval_minutes.get().strip(),
                 )
             )
+            manager_service.save_game_defaults(
+                {game_id: var.get().strip() for game_id, var in self.game_release_channel_vars.items()},
+                {game_id: var.get().strip() for game_id, var in self.game_message_tag_vars.items()},
+            )
             self.events.put(("output", "Settings saved."))
             self.events.put(("toast", ("Settings", "Settings saved. Restart the bot to apply them.")))
 
@@ -1690,13 +1899,12 @@ class BotManagerApp:
 
     def _add_mod(self) -> None:
         mod_id = self.new_mod_id.get().strip()
-        release_channel_id = self.new_release_channel_id.get().strip()
         if not mod_id:
             self._append_output("Enter a MOD_ID first.")
             return
 
         def task() -> None:
-            mod_name = manager_service.add_tracked_mod(mod_id, release_channel_id or None)
+            mod_name = manager_service.add_tracked_mod(mod_id, None)
             self.events.put(("clear_add_inputs", ""))
             self.events.put(("output", f"Added mod {mod_name} ({mod_id})."))
             self.events.put(("toast", ("Releases", f"Added mod {mod_name} ({mod_id}). Restart the bot to apply it.")))

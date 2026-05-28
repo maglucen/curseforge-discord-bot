@@ -31,6 +31,7 @@ async def main():
         sys.exit(1)
 
     mod_info = await cf_api.get_mod_info(mod_id)
+    game_id = mod_info.get("gameId")
     embed = build_release_embed(mod_info, latest_file)
 
     intents = discord.Intents.default()
@@ -46,7 +47,7 @@ async def main():
                 return
 
             await channel.send(
-                content=config.message_tag or "",
+                content=config.resolve_message_tag(mod_id, int(game_id) if game_id else None) or "",
                 embed=embed,
                 allowed_mentions=discord.AllowedMentions(roles=True, everyone=True),
             )

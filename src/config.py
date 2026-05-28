@@ -3,6 +3,42 @@ import os
 from dotenv import load_dotenv
 import logging
 
+def _parse_text_mapping(raw_value: str, *, item_separator: str = ";") -> dict[int, str]:
+    mapping: dict[int, str] = {}
+    for item in raw_value.split(item_separator):
+        entry = item.strip()
+        if not entry or ":" not in entry:
+            continue
+        key_text, value_text = entry.split(":", 1)
+        key_text = key_text.strip()
+        value_text = value_text.strip()
+        if not key_text:
+            continue
+        try:
+            mapping[int(key_text)] = value_text
+        except ValueError:
+            logging.warning(f"Skipping invalid text mapping entry: {entry}")
+    return mapping
+
+
+def _parse_int_mapping(raw_value: str, *, item_separator: str = ";") -> dict[int, int]:
+    mapping: dict[int, int] = {}
+    for item in raw_value.split(item_separator):
+        entry = item.strip()
+        if not entry or ":" not in entry:
+            continue
+        key_text, value_text = entry.split(":", 1)
+        key_text = key_text.strip()
+        value_text = value_text.strip()
+        if not key_text or not value_text:
+            continue
+        try:
+            mapping[int(key_text)] = int(value_text)
+        except ValueError:
+            logging.warning(f"Skipping invalid integer mapping entry: {entry}")
+    return mapping
+
+
 class Config:
     def __init__(self):
         # Always prefer the current .env values over inherited process variables.
@@ -40,6 +76,12 @@ class Config:
             for channel_id in os.getenv('RELEASES_CHANNEL_IDS', '').split(',')
             if channel_id.strip()
         ]
+        self.game_release_channel_ids: dict[int, int] = _parse_int_mapping(
+            os.getenv('GAME_RELEASE_CHANNEL_IDS', '')
+        )
+        self.mod_release_channel_ids: dict[int, int] = _parse_int_mapping(
+            os.getenv('MOD_RELEASE_CHANNEL_IDS', '')
+        )
         logging.debug(f"Loaded Discord settings - debug_channel_id: {self.debug_channel_id}, releases_channel_ids: {self.releases_channel_ids}")
         
         # CurseForge settings
@@ -64,6 +106,12 @@ class Config:
         
         # Message templates
         self.message_tag: str = os.getenv('MESSAGE_TAG', '')
+        self.game_message_tags: dict[int, str] = _parse_text_mapping(
+            os.getenv('GAME_MESSAGE_TAGS', '')
+        )
+        self.mod_message_tags: dict[int, str] = _parse_text_mapping(
+            os.getenv('MOD_MESSAGE_TAGS', '')
+        )
         self.message_header: str = os.getenv('MESSAGE_HEADER', '')
         self.message_footer: str = os.getenv('MESSAGE_FOOTER', '')
         logging.debug("Loaded message templates and labels")
@@ -124,5 +172,28 @@ class Config:
         else:
             logging.debug("Configuration validation successful")
         return errors
+
+    def resolve_release_channel_id(self, mod_id: int, game_id: int | None = None) -> int:
+        if mod_id in self.mod_release_channel_ids:
+            return self.mod_release_channel_ids[mod_id]
+        if game_id is not None and game_id in self.game_release_channel_ids:
+            return self.game_release_channel_ids[game_id]
+        try:
+            mod_index = self.mod_ids.index(mod_id)
+        except ValueError as exc:
+            raise RuntimeError(f"MOD_ID {mod_id} is not configured.") from exc
+
+        if mod_index < len(self.releases_channel_ids):
+            return self.releases_channel_ids[mod_index]
+        if self.releases_channel_ids:
+            return self.releases_channel_ids[0]
+        raise RuntimeError("No release channel is configured.")
+
+    def resolve_message_tag(self, mod_id: int, game_id: int | None = None) -> str:
+        if mod_id in self.mod_message_tags:
+            return self.mod_message_tags[mod_id]
+        if game_id is not None and game_id in self.game_message_tags:
+            return self.game_message_tags[game_id]
+        return self.message_tag
 
 config = Config()

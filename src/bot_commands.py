@@ -72,6 +72,7 @@ class ModUpdateCog(commands.Cog):
                 return
 
             mod_info = await self.cf_api.get_mod_info(mod_id)
+            game_id = mod_info.get("gameId")
             version = latest_file["version"]
             logging.debug(f"Found version {version} for mod {mod_info['name']}")
             embed = build_release_embed(mod_info, latest_file)
@@ -82,20 +83,10 @@ class ModUpdateCog(commands.Cog):
                     channel = self.bot.get_channel(config.debug_channel_id)
                 else:
                     try:
-                        mod_index = config.mod_ids.index(mod_id)
-
-                        if mod_index < len(config.releases_channel_ids):
-                            channel_id = config.releases_channel_ids[mod_index]
-                        else:
-                            channel_id = config.releases_channel_ids[0]
-                            logging.warning(
-                                f"No dedicated channel for mod {mod_id} at index {mod_index}. "
-                                f"Using fallback channel {channel_id}"
-                            )
-
+                        channel_id = config.resolve_release_channel_id(mod_id, int(game_id) if game_id else None)
                         channel = self.bot.get_channel(channel_id)
                         logging.debug(f"Retrieved channel object: {channel}")
-                    except (ValueError, IndexError) as exc:
+                    except RuntimeError as exc:
                         logging.error(f"Failed to find matching channel for mod {mod_id}: {str(exc)}")
                         return False
 
@@ -105,7 +96,7 @@ class ModUpdateCog(commands.Cog):
 
             await self.send_message(
                 channel=channel,
-                content=config.message_tag,
+                content=config.resolve_message_tag(mod_id, int(game_id) if game_id else None),
                 embed=embed,
             )
 
