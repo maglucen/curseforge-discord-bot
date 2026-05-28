@@ -705,17 +705,24 @@ class BotManagerApp:
         columnspan: int = 1,
     ) -> None:
         cell = tk.Frame(parent, bg=PANEL)
-        cell.grid(row=row, column=column, columnspan=columnspan, sticky="ew", padx=(0, 18 if columnspan == 1 else 0), pady=(0, 14))
+        cell.grid(row=row, column=column, columnspan=columnspan, sticky="ew", pady=(0, 14))
+        cell.columnconfigure(0, weight=1)
         tk.Label(cell, text=title, bg=PANEL, fg=MUTED, font=("Segoe UI", 10)).pack(anchor="w")
-        tk.Label(
+        value_label = tk.Label(
             cell,
             textvariable=value_var,
             bg=PANEL,
             fg=TEXT,
             font=("Segoe UI Semibold", 12),
             justify="left",
-            wraplength=440,
-        ).pack(anchor="w", pady=(4, 0))
+            anchor="w",
+        )
+        value_label.pack(anchor="w", fill="x", pady=(4, 0))
+
+        def sync_wrap(_event=None) -> None:
+            value_label.configure(wraplength=max(120, cell.winfo_width() - 2))
+
+        cell.bind("<Configure>", sync_wrap, add="+")
 
     def _style_text_widget(self, widget: ScrolledText) -> None:
         widget.configure(
@@ -861,13 +868,12 @@ class BotManagerApp:
         )
         details_panel.grid(row=0, column=0, sticky="ew", pady=(0, 16))
         details_content.columnconfigure(0, weight=1)
-        details_content.columnconfigure(1, weight=1)
         self._create_detail_metric(details_content, row=0, column=0, title="PID", value_var=self.pid_text)
-        self._create_detail_metric(details_content, row=0, column=1, title="Environment", value_var=self.venv_text)
-        self._create_detail_metric(details_content, row=1, column=0, title="Logs", value_var=self.log_text)
-        self._create_detail_metric(details_content, row=1, column=1, title="Last release", value_var=self.last_release_text)
-        self._create_detail_metric(details_content, row=2, column=0, title="Last error", value_var=self.last_error_text, columnspan=2)
-        self._create_detail_metric(details_content, row=3, column=0, title="Last action", value_var=self.notice_text, columnspan=2)
+        self._create_detail_metric(details_content, row=1, column=0, title="Environment", value_var=self.venv_text)
+        self._create_detail_metric(details_content, row=2, column=0, title="Logs", value_var=self.log_text)
+        self._create_detail_metric(details_content, row=3, column=0, title="Last release", value_var=self.last_release_text)
+        self._create_detail_metric(details_content, row=4, column=0, title="Last error", value_var=self.last_error_text)
+        self._create_detail_metric(details_content, row=5, column=0, title="Last action", value_var=self.notice_text)
 
         actions_panel, actions_content = self._create_panel(
             sidebar,
