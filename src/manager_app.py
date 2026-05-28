@@ -5,6 +5,7 @@ import ctypes
 import json
 import os
 import queue
+import re
 import socket
 import threading
 import time
@@ -48,6 +49,8 @@ VERSION_COLUMN_LABELS = {
     "version": "Version",
     "release_date": "Stored At",
 }
+DEFAULT_GEOMETRY = "1480x920"
+GEOMETRY_PATTERN = re.compile(r"^(\d+)x(\d+)([+-]\d+)?([+-]\d+)?$")
 SORT_ARROW_ASC = " \u25b2"
 SORT_ARROW_DESC = " \u25bc"
 RELEASE_SENT_MARKER = "Successfully sent release notification for"
@@ -298,12 +301,15 @@ class BotManagerApp:
         self._control_server_socket: socket.socket | None = None
         self._control_stop_event = threading.Event()
         self._geometry_save_after_id: str | None = None
+        self._geometry_save_enabled = False
+        self._last_normal_geometry = DEFAULT_GEOMETRY
+        self._release_refresh_in_progress = False
         manager_service.ensure_runtime_dirs()
         self._set_window_icon()
         self._restore_window_geometry()
         ui_state = self._load_ui_state()
 
-        self.events: queue.Queue[tuple[str, str | tuple[str, str]]] = queue.Queue()
+        self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.action_lock = threading.Lock()
         self.follow_logs = tk.BooleanVar(value=True)
         self.new_mod_id = tk.StringVar(value="")
@@ -354,10 +360,10 @@ class BotManagerApp:
         self.root.bind("<Configure>", self._schedule_geometry_save, add="+")
         self._refresh_status()
         self._refresh_logs(force=True)
-        self._refresh_releases()
         self._start_control_server()
         self._process_events()
         self._schedule_refresh()
+        self.root.after(100, self._refresh_releases)
         self.root.after_idle(self._apply_initial_pane_layouts)
 
     def _set_window_icon(self) -> None:
@@ -379,21 +385,77 @@ class BotManagerApp:
                 self._icon_image = None
 
     def _restore_window_geometry(self) -> None:
-        default_geometry = "1480x920"
-        geometry = default_geometry
+        geometry = DEFAULT_GEOMETRY
+        window_state = "normal"
         if WINDOW_GEOMETRY_FILE.exists():
             try:
-                stored_geometry = WINDOW_GEOMETRY_FILE.read_text(encoding="utf-8").strip()
-                if stored_geometry:
-                    geometry = stored_geometry
-            except OSError:
-                geometry = default_geometry
+                raw_value = WINDOW_GEOMETRY_FILE.read_text(encoding="utf-8").strip()
+                if raw_value.startswith("{"):
+                    stored_state = json.loads(raw_value)
+                    normal_geometry = str(stored_state.get("normal_geometry") or "").strip()
+                    stored_window_state = str(stored_state.get("window_state") or "normal").strip()
+                    if self._is_valid_geometry(normal_geometry):
+                        geometry = self._safe_normal_geometry(normal_geometry)
+                    if stored_window_state in {"normal", "zoomed"}:
+                        window_state = stored_window_state
+                elif self._is_valid_geometry(raw_value):
+                    if self._looks_like_saved_maximized_geometry(raw_value):
+                        geometry = DEFAULT_GEOMETRY
+                        window_state = "zoomed"
+                    else:
+                        geometry = raw_value
+            except (OSError, json.JSONDecodeError):
+                geometry = DEFAULT_GEOMETRY
+                window_state = "normal"
+        self._last_normal_geometry = geometry
         self.root.geometry(geometry)
+        self.root.after_idle(lambda: self._apply_restored_window_state(window_state))
 
     def _schedule_geometry_save(self, _event=None) -> None:
+        if not self._geometry_save_enabled:
+            return
+        if self.root.state() == "normal":
+            current_geometry = self.root.geometry()
+            if self._is_valid_geometry(current_geometry) and not self._looks_like_saved_maximized_geometry(current_geometry):
+                self._last_normal_geometry = current_geometry
         if self._geometry_save_after_id is not None:
             self.root.after_cancel(self._geometry_save_after_id)
         self._geometry_save_after_id = self.root.after(250, self._save_window_geometry)
+
+    def _apply_restored_window_state(self, window_state: str) -> None:
+        if window_state == "zoomed":
+            try:
+                self.root.state("zoomed")
+            except tk.TclError:
+                pass
+        self.root.after(800, self._enable_geometry_saves)
+
+    def _enable_geometry_saves(self) -> None:
+        if self.root.state() == "normal":
+            current_geometry = self.root.geometry()
+            if self._is_valid_geometry(current_geometry) and not self._looks_like_saved_maximized_geometry(current_geometry):
+                self._last_normal_geometry = current_geometry
+        self._geometry_save_enabled = True
+
+    def _is_valid_geometry(self, geometry: str) -> bool:
+        return bool(GEOMETRY_PATTERN.match(geometry))
+
+    def _safe_normal_geometry(self, geometry: str) -> str:
+        if self._looks_like_saved_maximized_geometry(geometry):
+            return DEFAULT_GEOMETRY
+        return geometry
+
+    def _looks_like_saved_maximized_geometry(self, geometry: str) -> bool:
+        match = GEOMETRY_PATTERN.match(geometry)
+        if not match:
+            return False
+        width = int(match.group(1))
+        height = int(match.group(2))
+        x = int(match.group(3) or 0)
+        y = int(match.group(4) or 0)
+        screen_width = max(1, self.root.winfo_screenwidth())
+        screen_height = max(1, self.root.winfo_screenheight())
+        return width >= screen_width or height >= screen_height or x < -24 or y < -24
 
     def _load_ui_state(self) -> dict[str, str | None]:
         if not UI_STATE_FILE.exists():
@@ -694,8 +756,23 @@ class BotManagerApp:
 
     def _save_window_geometry(self) -> None:
         self._geometry_save_after_id = None
+        if not self._geometry_save_enabled:
+            return
+        window_state = self.root.state()
+        if window_state == "iconic":
+            return
+        if window_state == "normal":
+            current_geometry = self.root.geometry()
+            if self._looks_like_saved_maximized_geometry(current_geometry):
+                window_state = "zoomed"
+            elif self._is_valid_geometry(current_geometry):
+                self._last_normal_geometry = current_geometry
+        saved_state = {
+            "normal_geometry": self._last_normal_geometry,
+            "window_state": "zoomed" if window_state == "zoomed" else "normal",
+        }
         try:
-            WINDOW_GEOMETRY_FILE.write_text(self.root.geometry(), encoding="utf-8")
+            WINDOW_GEOMETRY_FILE.write_text(json.dumps(saved_state, indent=2), encoding="utf-8")
         except OSError:
             pass
 
@@ -1086,9 +1163,25 @@ class BotManagerApp:
         self.root.after(2000, self._schedule_refresh)
 
     def _refresh_releases(self) -> None:
+        if self._release_refresh_in_progress:
+            self._set_notice("Release refresh is already running.")
+            return
+        self._release_refresh_in_progress = True
+        self._set_notice("Refreshing CurseForge release data...")
+        thread = threading.Thread(target=self._refresh_releases_worker, daemon=True)
+        thread.start()
+
+    def _refresh_releases_worker(self) -> None:
+        try:
+            summaries = manager_service.list_tracked_releases()
+        except Exception as exc:
+            self.events.put(("release_error", str(exc)))
+            return
+        self.events.put(("release_summaries", summaries))
+
+    def _apply_release_summaries(self, summaries: list[manager_service.ModReleaseSummary]) -> None:
         previous_mod = self._selected_mod_id()
-        self.release_summaries = manager_service.list_tracked_releases()
-        self.release_summaries = self._sorted_release_summaries(self.release_summaries)
+        self.release_summaries = self._sorted_release_summaries(summaries)
 
         for item in self.mods_tree.get_children():
             self.mods_tree.delete(item)
@@ -1117,12 +1210,16 @@ class BotManagerApp:
 
         self._render_game_defaults()
         self._refresh_stats_view()
+        self._set_notice(f"Loaded {len(self.release_summaries)} tracked mods.")
 
     def _refresh_stats_view(self) -> None:
-        stats = manager_service.get_dashboard_stats()
+        tracked_mod_count = len(self.release_summaries)
+        following_mod_count = sum(1 for summary in self.release_summaries if summary.following)
+        total_downloads = sum(summary.download_count for summary in self.release_summaries)
+        total_likes = sum(summary.thumbs_up_count for summary in self.release_summaries)
         self.stats_summary_text.set(
-            f"Tracked mods: {stats.tracked_mod_count} | Following: {stats.following_mod_count} | "
-            f"Total downloads: {stats.total_downloads} | Total likes: {stats.total_likes}"
+            f"Tracked mods: {tracked_mod_count} | Following: {following_mod_count} | "
+            f"Total downloads: {total_downloads} | Total likes: {total_likes}"
         )
 
         for item in self.stats_tree.get_children():
@@ -1361,7 +1458,7 @@ class BotManagerApp:
         )
         self._update_mod_heading_labels()
         self._save_ui_state()
-        self._refresh_releases()
+        self._apply_release_summaries(self.release_summaries)
 
     def _sorted_versions(self, versions: list[manager_service.ReleaseRecord]) -> list[manager_service.ReleaseRecord]:
         if self.version_sort_column is None or self.version_sort_direction is None:
@@ -1787,6 +1884,14 @@ class BotManagerApp:
                 self._refresh_status()
                 self._refresh_logs(force=True)
                 self._refresh_releases()
+            elif event_type == "release_summaries":
+                self._release_refresh_in_progress = False
+                self._apply_release_summaries(payload)  # type: ignore[arg-type]
+            elif event_type == "release_error":
+                self._release_refresh_in_progress = False
+                message = str(payload)
+                self._append_output(f"Release refresh failed: {message}")
+                self._set_notice(f"Release refresh failed: {message}")
             elif event_type == "toast":
                 title, message = payload  # type: ignore[misc]
                 self._set_notice(f"{title}: {message}")
