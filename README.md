@@ -6,7 +6,7 @@ This is my fork of CICDodo, adapted for my own modding workflow. The original bo
 
 Original project: [jordan-dalby/CICDodo](https://github.com/jordan-dalby/CICDodo)
 
-![CurseForge Discord Bot Manager](docs/screenshots/manager.png)
+![CurseForge Discord Bot Manager dashboard](docs/screenshots/manager-dashboard.png)
 
 ## What It Does
 
@@ -142,6 +142,16 @@ Adding by `MOD_ID` is the most reliable path for private, unlisted, or not-yet-i
 
 Per-mod overrides have priority over per-game defaults. Use them when one specific mod should announce to a different channel or use a different message tag.
 
+![Tracked mods](docs/screenshots/releases-tracked-mods.png)
+
+The tracked-mod columns are configurable from the header context menu.
+
+![Tracked mod column picker](docs/screenshots/releases-column-picker.png)
+
+The search dialog lets you find public CurseForge projects by name and add the selected result.
+
+![CurseForge search](docs/screenshots/curseforge-search.png)
+
 ### Settings
 
 The `Settings` tab edits the most important `.env` values from the UI.
@@ -158,23 +168,21 @@ It includes:
 
 The `Per-game defaults` section is generated from the games detected in your currently tracked mods. It is not a fixed hardcoded list. When the app detects a new CurseForge `gameId` from a tracked mod, that game can appear there after refresh.
 
+![Per-game defaults](docs/screenshots/settings-game-defaults.png)
+
 ### Stats
 
 The `Stats` tab is a compact view for author-facing mod stats and links.
 
 It shows downloads, likes, stored versions, update dates, and quick access to comments. Columns can be sorted, so it is useful for checking which followed projects have the most activity or which ones were updated recently.
 
-### Screenshot Notes
+![Stats tab](docs/screenshots/stats-tab.png)
 
-The README currently includes one manager screenshot. More screenshots can be added later for:
+### Discord Output
 
-- the main dashboard/sidebar
-- the Releases tab with tracked mods
-- the CurseForge search dialog
-- the Settings tab with per-game defaults
-- the Stats tab
+Release announcements are posted as Discord embeds with the configured mention tag, changelog summary, links, timestamp, and optional mod logo.
 
-Place screenshots under `docs/screenshots/` and reference them from this README.
+![Discord release message](docs/screenshots/discord-release-message.png)
 
 ## Notes
 
