@@ -41,9 +41,74 @@ MOD_COLUMN_LABELS = {
     "game_name": "Game",
     "mod_id": "MOD_ID",
     "download_count": "Downloads",
+    "thumbs_up_count": "Likes",
+    "comments_enabled": "Comments",
     "curseforge_updated_at": "CurseForge Updated",
     "latest_version": "Latest Stored",
     "latest_date": "Stored At",
+    "stored_versions": "Versions",
+    "release_channel_id": "Release Channel",
+    "message_tag": "Message Tag",
+    "release_channel_override": "Channel Override",
+    "message_tag_override": "Tag Override",
+}
+MOD_DEFAULT_VISIBLE_COLUMNS = [
+    "following",
+    "mod_name",
+    "game_name",
+    "mod_id",
+    "download_count",
+    "curseforge_updated_at",
+    "latest_version",
+    "latest_date",
+]
+MOD_COLUMN_WIDTHS = {
+    "following": 88,
+    "mod_name": 240,
+    "game_name": 170,
+    "mod_id": 110,
+    "download_count": 100,
+    "thumbs_up_count": 80,
+    "comments_enabled": 90,
+    "curseforge_updated_at": 170,
+    "latest_version": 120,
+    "latest_date": 160,
+    "stored_versions": 90,
+    "release_channel_id": 150,
+    "message_tag": 170,
+    "release_channel_override": 150,
+    "message_tag_override": 170,
+}
+MOD_COLUMN_ANCHORS = {
+    "following": "center",
+    "download_count": "e",
+    "thumbs_up_count": "e",
+    "comments_enabled": "center",
+    "stored_versions": "center",
+}
+STATS_COLUMN_LABELS = {
+    "mod_name": "Mod",
+    "mod_id": "MOD_ID",
+    "download_count": "Downloads",
+    "thumbs_up_count": "Likes",
+    "stored_versions": "Versions",
+    "curseforge_updated_at": "Updated",
+    "comments_link": "Comments",
+}
+STATS_COLUMN_WIDTHS = {
+    "mod_name": 260,
+    "mod_id": 100,
+    "download_count": 120,
+    "thumbs_up_count": 80,
+    "stored_versions": 90,
+    "curseforge_updated_at": 160,
+    "comments_link": 130,
+}
+STATS_COLUMN_ANCHORS = {
+    "download_count": "e",
+    "thumbs_up_count": "e",
+    "stored_versions": "center",
+    "comments_link": "center",
 }
 VERSION_COLUMN_LABELS = {
     "version": "Version",
@@ -342,10 +407,28 @@ class BotManagerApp:
         self.releases_panes: tk.PanedWindow | None = None
         self.tab_frames: dict[str, tk.Frame] = {}
         self.tab_buttons: dict[str, RoundedButton] = {}
+        self.mod_column_order = self._normalize_column_list(
+            ui_state.get("mod_column_order"),
+            MOD_COLUMN_LABELS,
+            list(MOD_COLUMN_LABELS),
+            append_missing=True,
+        )
+        self.mod_visible_columns = self._normalize_column_list(
+            ui_state.get("mod_visible_columns"),
+            MOD_COLUMN_LABELS,
+            MOD_DEFAULT_VISIBLE_COLUMNS,
+        )
+        self._mod_drag_column: str | None = None
+        self._mod_drag_started = False
         self.mod_sort_column, self.mod_sort_direction = self._normalize_sort_state(
             ui_state.get("mod_sort_column"),
             ui_state.get("mod_sort_direction"),
             MOD_COLUMN_LABELS,
+        )
+        self.stats_sort_column, self.stats_sort_direction = self._normalize_sort_state(
+            ui_state.get("stats_sort_column"),
+            ui_state.get("stats_sort_direction"),
+            STATS_COLUMN_LABELS,
         )
         self.version_sort_column, self.version_sort_direction = self._normalize_sort_state(
             ui_state.get("version_sort_column"),
@@ -484,6 +567,26 @@ class BotManagerApp:
         if isinstance(tab_name, str) and tab_name in {"Logs", "Activity", "Releases", "Settings", "Stats"}:
             return tab_name
         return "Logs"
+
+    def _normalize_column_list(
+        self,
+        value: object,
+        valid_columns: dict[str, str],
+        fallback: list[str],
+        append_missing: bool = False,
+    ) -> list[str]:
+        if isinstance(value, list):
+            selected = [str(column) for column in value if isinstance(column, str) and column in valid_columns]
+        else:
+            selected = []
+        result = []
+        fallback_columns = fallback if append_missing or not selected else []
+        for column in selected + fallback_columns:
+            if column in valid_columns and column not in result:
+                result.append(column)
+        if not result:
+            result = list(fallback)
+        return result
 
     def _configure_dark_theme(self) -> None:
         self.root.configure(bg=BG)
@@ -753,6 +856,10 @@ class BotManagerApp:
             "selected_tab": selected_tab,
             "mod_sort_column": self.mod_sort_column,
             "mod_sort_direction": self.mod_sort_direction,
+            "mod_column_order": self.mod_column_order,
+            "mod_visible_columns": self.mod_visible_columns,
+            "stats_sort_column": self.stats_sort_column,
+            "stats_sort_direction": self.stats_sort_direction,
             "version_sort_column": self.version_sort_column,
             "version_sort_direction": self.version_sort_direction,
         }
@@ -1023,29 +1130,24 @@ class BotManagerApp:
         tk.Label(tracked_mods_pane, text="Tracked mods", bg=PANEL_ALT, fg=TEXT, font=("Segoe UI Semibold", 18)).grid(row=0, column=0, sticky="nw")
         self.mods_tree = ttk.Treeview(
             tracked_mods_pane,
-            columns=("following", "mod_name", "game_name", "mod_id", "download_count", "curseforge_updated_at", "latest_version", "latest_date"),
+            columns=tuple(MOD_COLUMN_LABELS),
             show="headings",
             height=8,
         )
         self.mods_tree.grid(row=1, column=0, sticky="nsew", pady=(8, 8))
-        self.mods_tree.heading("following", text="Following", command=lambda: self._sort_mods_by("following"))
-        self.mods_tree.heading("mod_name", text="Mod", command=lambda: self._sort_mods_by("mod_name"))
-        self.mods_tree.heading("game_name", text="Game", command=lambda: self._sort_mods_by("game_name"))
-        self.mods_tree.heading("mod_id", text="MOD_ID", command=lambda: self._sort_mods_by("mod_id"))
-        self.mods_tree.heading("download_count", text="Downloads", command=lambda: self._sort_mods_by("download_count"))
-        self.mods_tree.heading("curseforge_updated_at", text="CurseForge Updated", command=lambda: self._sort_mods_by("curseforge_updated_at"))
-        self.mods_tree.heading("latest_version", text="Latest Stored", command=lambda: self._sort_mods_by("latest_version"))
-        self.mods_tree.heading("latest_date", text="Stored At", command=lambda: self._sort_mods_by("latest_date"))
-        self.mods_tree.column("following", width=88, anchor="center")
-        self.mods_tree.column("mod_name", width=240, anchor="w")
-        self.mods_tree.column("game_name", width=170, anchor="w")
-        self.mods_tree.column("mod_id", width=110, anchor="w")
-        self.mods_tree.column("download_count", width=100, anchor="e")
-        self.mods_tree.column("curseforge_updated_at", width=170, anchor="w")
-        self.mods_tree.column("latest_version", width=120, anchor="w")
-        self.mods_tree.column("latest_date", width=160, anchor="w")
+        for column in MOD_COLUMN_LABELS:
+            self.mods_tree.heading(column, text=MOD_COLUMN_LABELS[column], command=lambda current=column: self._sort_mods_by(current))
+            self.mods_tree.column(
+                column,
+                width=MOD_COLUMN_WIDTHS.get(column, 120),
+                anchor=MOD_COLUMN_ANCHORS.get(column, "w"),
+                stretch=True,
+            )
         self.mods_tree.bind("<<TreeviewSelect>>", self._on_mod_selected)
         self.mods_tree.bind("<Button-1>", self._on_mod_tree_click, add="+")
+        self.mods_tree.bind("<ButtonPress-1>", self._on_mod_heading_press, add="+")
+        self.mods_tree.bind("<B1-Motion>", self._on_mod_heading_drag, add="+")
+        self.mods_tree.bind("<ButtonRelease-1>", self._on_mod_heading_release, add="+")
         self.mods_tree.bind("<Button-3>", self._show_mod_context_menu)
 
         self.mods_tree_yscroll = ttk.Scrollbar(tracked_mods_pane, orient="vertical", command=self.mods_tree.yview)
@@ -1079,6 +1181,7 @@ class BotManagerApp:
         self.mod_context_menu.add_command(label="Open CurseForge Page", command=self._open_selected_public_page)
         self.mod_context_menu.add_command(label="Open Author Files", command=self._open_selected_author_files_page)
         self.mod_context_menu.add_command(label="Open Comments", command=self._open_selected_comments_page)
+        self._apply_mod_columns()
 
         settings_panel, settings_content = self._create_panel(
             settings_tab,
@@ -1134,23 +1237,22 @@ class BotManagerApp:
         tk.Label(stats_content, textvariable=self.stats_summary_text, bg=CONTROL_ALT, fg=MUTED, font=("Segoe UI", 10)).grid(row=1, column=0, sticky="w", pady=(0, 8))
         self.stats_tree = ttk.Treeview(
             stats_content,
-            columns=("mod_name", "mod_id", "download_count", "likes", "comments_link"),
+            columns=tuple(STATS_COLUMN_LABELS),
             show="headings",
             height=10,
         )
         self.stats_tree.grid(row=2, column=0, sticky="nsew")
-        self.stats_tree.heading("mod_name", text="Mod")
-        self.stats_tree.heading("mod_id", text="MOD_ID")
-        self.stats_tree.heading("download_count", text="Downloads")
-        self.stats_tree.heading("likes", text="Likes")
-        self.stats_tree.heading("comments_link", text="Comments")
-        self.stats_tree.column("mod_name", width=260, anchor="w")
-        self.stats_tree.column("mod_id", width=100, anchor="w")
-        self.stats_tree.column("download_count", width=120, anchor="e")
-        self.stats_tree.column("likes", width=80, anchor="e")
-        self.stats_tree.column("comments_link", width=130, anchor="center")
+        for column in STATS_COLUMN_LABELS:
+            self.stats_tree.heading(column, text=STATS_COLUMN_LABELS[column], command=lambda current=column: self._sort_stats_by(current))
+            self.stats_tree.column(
+                column,
+                width=STATS_COLUMN_WIDTHS.get(column, 120),
+                anchor=STATS_COLUMN_ANCHORS.get(column, "w"),
+                stretch=True,
+            )
         self.stats_tree.bind("<Button-1>", self._on_stats_tree_click, add="+")
         self._update_mod_heading_labels()
+        self._update_stats_heading_labels()
         self._update_version_heading_labels()
         self._show_tab(self.selected_tab)
 
@@ -1188,6 +1290,7 @@ class BotManagerApp:
     def _apply_release_summaries(self, summaries: list[manager_service.ModReleaseSummary]) -> None:
         previous_mod = self._selected_mod_id()
         self.release_summaries = self._sorted_release_summaries(summaries)
+        self._apply_mod_columns()
 
         for item in self.mods_tree.get_children():
             self.mods_tree.delete(item)
@@ -1203,9 +1306,16 @@ class BotManagerApp:
                     summary.game_name,
                     summary.mod_id,
                     summary.download_count,
+                    summary.thumbs_up_count,
+                    "Yes" if summary.comments_enabled else "No",
                     self._format_curseforge_date(summary.curseforge_updated_at),
                     summary.latest_version,
                     summary.latest_date,
+                    len(summary.versions),
+                    summary.release_channel_id or "-",
+                    summary.message_tag or "-",
+                    summary.release_channel_override or "-",
+                    summary.message_tag_override or "-",
                 ),
             )
 
@@ -1231,7 +1341,7 @@ class BotManagerApp:
         for item in self.stats_tree.get_children():
             self.stats_tree.delete(item)
 
-        for summary in self.release_summaries:
+        for summary in self._sorted_stats_summaries():
             self.stats_tree.insert(
                 "",
                 tk.END,
@@ -1241,6 +1351,8 @@ class BotManagerApp:
                     summary.mod_id,
                     summary.download_count,
                     summary.thumbs_up_count,
+                    len(summary.versions),
+                    self._format_curseforge_date(summary.curseforge_updated_at),
                     "Open comments",
                 ),
             )
@@ -1331,8 +1443,8 @@ class BotManagerApp:
 
     def _on_mod_tree_click(self, event):
         row_id = self.mods_tree.identify_row(event.y)
-        column_id = self.mods_tree.identify_column(event.x)
-        if not row_id or column_id != "#1":
+        column_id = self._tree_column_from_display_index(self.mods_tree, self.mods_tree.identify_column(event.x))
+        if not row_id or column_id != "following":
             return None
 
         self.mods_tree.selection_set(row_id)
@@ -1342,8 +1454,8 @@ class BotManagerApp:
 
     def _on_stats_tree_click(self, event):
         row_id = self.stats_tree.identify_row(event.y)
-        column_id = self.stats_tree.identify_column(event.x)
-        if not row_id or column_id != "#5":
+        column_id = self._tree_column_from_display_index(self.stats_tree, self.stats_tree.identify_column(event.x))
+        if not row_id or column_id != "comments_link":
             return None
 
         self.stats_tree.selection_set(row_id)
@@ -1360,6 +1472,22 @@ class BotManagerApp:
                     self._append_output("No comments page is available for the selected mod.")
                 break
         return "break"
+
+    def _tree_column_from_display_index(self, tree: ttk.Treeview, display_index: str) -> str | None:
+        if not display_index.startswith("#"):
+            return None
+        try:
+            index = int(display_index[1:]) - 1
+        except ValueError:
+            return None
+        display_columns = tree["displaycolumns"]
+        if not display_columns or display_columns == "#all":
+            columns = list(tree["columns"])
+        else:
+            columns = list(display_columns)
+        if 0 <= index < len(columns):
+            return str(columns[index])
+        return None
 
     def _selected_mod_id(self) -> str | None:
         selection = self.mods_tree.selection()
@@ -1405,6 +1533,9 @@ class BotManagerApp:
         except ValueError:
             return datetime.min
 
+    def _numeric_or_text_sort_key(self, value: str):
+        return (0, int(value)) if value.isdigit() else (1, value.lower())
+
     def _heading_text(self, base_label: str, active: bool, direction: str | None) -> str:
         if not active or direction is None:
             return base_label
@@ -1417,6 +1548,13 @@ class BotManagerApp:
             self.mods_tree.heading(
                 column,
                 text=self._heading_text(label, self.mod_sort_column == column, self.mod_sort_direction),
+            )
+
+    def _update_stats_heading_labels(self) -> None:
+        for column, label in STATS_COLUMN_LABELS.items():
+            self.stats_tree.heading(
+                column,
+                text=self._heading_text(label, self.stats_sort_column == column, self.stats_sort_direction),
             )
 
     def _update_version_heading_labels(self) -> None:
@@ -1443,15 +1581,29 @@ class BotManagerApp:
             if self.mod_sort_column == "game_name":
                 return summary.game_name.lower()
             if self.mod_sort_column == "mod_id":
-                return int(summary.mod_id) if summary.mod_id.isdigit() else summary.mod_id
+                return self._numeric_or_text_sort_key(summary.mod_id)
             if self.mod_sort_column == "download_count":
                 return summary.download_count
+            if self.mod_sort_column == "thumbs_up_count":
+                return summary.thumbs_up_count
+            if self.mod_sort_column == "comments_enabled":
+                return 1 if summary.comments_enabled else 0
             if self.mod_sort_column == "curseforge_updated_at":
                 return self._sort_key_curseforge_date(summary)
             if self.mod_sort_column == "latest_version":
-                return int(summary.latest_version) if summary.latest_version.isdigit() else summary.latest_version
+                return self._numeric_or_text_sort_key(summary.latest_version)
             if self.mod_sort_column == "latest_date":
                 return summary.latest_date
+            if self.mod_sort_column == "stored_versions":
+                return len(summary.versions)
+            if self.mod_sort_column == "release_channel_id":
+                return summary.release_channel_id
+            if self.mod_sort_column == "message_tag":
+                return summary.message_tag
+            if self.mod_sort_column == "release_channel_override":
+                return summary.release_channel_override
+            if self.mod_sort_column == "message_tag_override":
+                return summary.message_tag_override
             return summary.mod_name.lower()
 
         return sorted(summaries, key=key, reverse=self.mod_sort_direction == "desc")
@@ -1465,6 +1617,127 @@ class BotManagerApp:
         self._update_mod_heading_labels()
         self._save_ui_state()
         self._apply_release_summaries(self.release_summaries)
+
+    def _sorted_stats_summaries(self) -> list[manager_service.ModReleaseSummary]:
+        summaries = list(self.release_summaries)
+        if self.stats_sort_column is None or self.stats_sort_direction is None:
+            return summaries
+
+        def key(summary: manager_service.ModReleaseSummary):
+            if self.stats_sort_column == "mod_name":
+                return summary.mod_name.lower()
+            if self.stats_sort_column == "mod_id":
+                return self._numeric_or_text_sort_key(summary.mod_id)
+            if self.stats_sort_column == "download_count":
+                return summary.download_count
+            if self.stats_sort_column == "thumbs_up_count":
+                return summary.thumbs_up_count
+            if self.stats_sort_column == "stored_versions":
+                return len(summary.versions)
+            if self.stats_sort_column == "curseforge_updated_at":
+                return self._sort_key_curseforge_date(summary)
+            if self.stats_sort_column == "comments_link":
+                return 1 if summary.comments_url else 0
+            return summary.mod_name.lower()
+
+        return sorted(summaries, key=key, reverse=self.stats_sort_direction == "desc")
+
+    def _sort_stats_by(self, column: str) -> None:
+        self.stats_sort_column, self.stats_sort_direction = self._next_sort_direction(
+            self.stats_sort_column,
+            self.stats_sort_direction,
+            column,
+        )
+        self._update_stats_heading_labels()
+        self._save_ui_state()
+        self._refresh_stats_view()
+
+    def _apply_mod_columns(self) -> None:
+        self.mod_column_order = self._normalize_column_list(
+            self.mod_column_order,
+            MOD_COLUMN_LABELS,
+            list(MOD_COLUMN_LABELS),
+            append_missing=True,
+        )
+        self.mod_visible_columns = self._normalize_column_list(self.mod_visible_columns, MOD_COLUMN_LABELS, MOD_DEFAULT_VISIBLE_COLUMNS)
+        visible_columns = [column for column in self.mod_column_order if column in self.mod_visible_columns]
+        if not visible_columns:
+            visible_columns = ["mod_name"]
+            self.mod_visible_columns = visible_columns
+        self.mods_tree.configure(displaycolumns=tuple(visible_columns))
+
+    def _toggle_mod_column_visibility(self, column: str) -> None:
+        if column not in MOD_COLUMN_LABELS:
+            return
+        if column in self.mod_visible_columns:
+            if len(self.mod_visible_columns) == 1:
+                self._set_notice("At least one tracked-mod column must stay visible.")
+                return
+            self.mod_visible_columns = [current for current in self.mod_visible_columns if current != column]
+        else:
+            ordered_visible = [current for current in self.mod_column_order if current in self.mod_visible_columns]
+            ordered_visible.append(column)
+            self.mod_visible_columns = ordered_visible
+        self._apply_mod_columns()
+        self._save_ui_state()
+
+    def _reset_mod_columns(self) -> None:
+        self.mod_column_order = list(MOD_COLUMN_LABELS)
+        self.mod_visible_columns = list(MOD_DEFAULT_VISIBLE_COLUMNS)
+        self._apply_mod_columns()
+        self._save_ui_state()
+
+    def _show_mod_column_menu(self, event) -> None:
+        menu = tk.Menu(
+            self.root,
+            tearoff=0,
+            bg=CONTROL,
+            fg=TEXT,
+            activebackground=SELECTION,
+            activeforeground=TEXT,
+            relief="flat",
+            borderwidth=0,
+        )
+        for column, label in MOD_COLUMN_LABELS.items():
+            prefix = "[x]" if column in self.mod_visible_columns else "[ ]"
+            menu.add_command(label=f"{prefix} {label}", command=lambda current=column: self._toggle_mod_column_visibility(current))
+        menu.add_separator()
+        menu.add_command(label="Reset Columns", command=self._reset_mod_columns)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _on_mod_heading_press(self, event) -> None:
+        if self.mods_tree.identify_region(event.x, event.y) != "heading":
+            self._mod_drag_column = None
+            self._mod_drag_started = False
+            return
+        self._mod_drag_column = self._tree_column_from_display_index(self.mods_tree, self.mods_tree.identify_column(event.x))
+        self._mod_drag_started = False
+
+    def _on_mod_heading_drag(self, event) -> None:
+        if self._mod_drag_column is not None and self.mods_tree.identify_region(event.x, event.y) == "heading":
+            self._mod_drag_started = True
+
+    def _on_mod_heading_release(self, event) -> None:
+        if self._mod_drag_column is None or not self._mod_drag_started:
+            self._mod_drag_column = None
+            self._mod_drag_started = False
+            return
+        target_column = self._tree_column_from_display_index(self.mods_tree, self.mods_tree.identify_column(event.x))
+        source_column = self._mod_drag_column
+        self._mod_drag_column = None
+        self._mod_drag_started = False
+        if target_column is None or target_column == source_column:
+            return
+        if source_column not in self.mod_column_order or target_column not in self.mod_column_order:
+            return
+        self.mod_column_order = [column for column in self.mod_column_order if column != source_column]
+        target_index = self.mod_column_order.index(target_column)
+        self.mod_column_order.insert(target_index, source_column)
+        self._apply_mod_columns()
+        self._save_ui_state()
 
     def _sorted_versions(self, versions: list[manager_service.ReleaseRecord]) -> list[manager_service.ReleaseRecord]:
         if self.version_sort_column is None or self.version_sort_direction is None:
@@ -1656,6 +1929,9 @@ class BotManagerApp:
         os.startfile(AUTHOR_DASHBOARD_URL)
 
     def _show_mod_context_menu(self, event) -> None:
+        if self.mods_tree.identify_region(event.x, event.y) == "heading":
+            self._show_mod_column_menu(event)
+            return
         row_id = self.mods_tree.identify_row(event.y)
         if not row_id:
             return
