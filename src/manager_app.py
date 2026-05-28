@@ -366,6 +366,7 @@ class BotManagerApp:
         self._control_server_socket: socket.socket | None = None
         self._control_stop_event = threading.Event()
         self._geometry_save_after_id: str | None = None
+        self._fit_mod_columns_after_id: str | None = None
         self._geometry_save_enabled = False
         self._last_normal_geometry = DEFAULT_GEOMETRY
         self._release_refresh_in_progress = False
@@ -407,6 +408,8 @@ class BotManagerApp:
         self.mod_search_results: list[manager_service.ModSearchResult] = []
         self.mod_search_window: tk.Toplevel | None = None
         self.mod_search_tree: ttk.Treeview | None = None
+        self.mod_column_menu_window: tk.Toplevel | None = None
+        self.mod_column_menu_vars: dict[str, tk.BooleanVar] = {}
         self.pending_confirmations: dict[str, float] = {}
         self.sidebar_panes: tk.PanedWindow | None = None
         self.releases_panes: tk.PanedWindow | None = None
@@ -1157,6 +1160,7 @@ class BotManagerApp:
         self.mods_tree.bind("<B1-Motion>", self._on_mod_heading_drag, add="+")
         self.mods_tree.bind("<ButtonRelease-1>", self._on_mod_heading_release, add="+")
         self.mods_tree.bind("<Button-3>", self._show_mod_context_menu)
+        self.mods_tree.bind("<Configure>", self._schedule_fit_mod_columns, add="+")
 
         self.mods_tree_yscroll = ttk.Scrollbar(tracked_mods_pane, orient="vertical", command=self.mods_tree.yview)
         self.mods_tree.configure(yscrollcommand=self.mods_tree_yscroll.set)
@@ -1673,14 +1677,85 @@ class BotManagerApp:
             visible_columns = ["mod_name"]
             self.mod_visible_columns = visible_columns
         self.mods_tree.configure(displaycolumns=tuple(visible_columns))
+        self._schedule_fit_mod_columns()
 
-    def _toggle_mod_column_visibility(self, column: str) -> None:
-        if column not in MOD_COLUMN_LABELS:
+    def _visible_mod_columns_in_order(self) -> list[str]:
+        return [column for column in self.mod_column_order if column in self.mod_visible_columns]
+
+    def _schedule_fit_mod_columns(self, _event=None) -> None:
+        if self._fit_mod_columns_after_id is not None:
+            self.root.after_cancel(self._fit_mod_columns_after_id)
+        self._fit_mod_columns_after_id = self.root.after_idle(self._fit_mod_columns_to_width)
+
+    def _fit_mod_columns_to_width(self) -> None:
+        self._fit_mod_columns_after_id = None
+        if not hasattr(self, "mods_tree") or not self.mods_tree.winfo_exists():
             return
+
+        visible_columns = self._visible_mod_columns_in_order()
+        if not visible_columns:
+            return
+
+        available_width = max(self.mods_tree.winfo_width() - 4, 1)
+        base_widths = {column: MOD_COLUMN_WIDTHS.get(column, 120) for column in visible_columns}
+        base_total = sum(base_widths.values())
+
+        if available_width <= 1:
+            return
+
+        if base_total >= available_width:
+            for column in visible_columns:
+                self.mods_tree.column(
+                    column,
+                    width=base_widths[column],
+                    minwidth=50,
+                    stretch=False,
+                    anchor=MOD_COLUMN_ANCHORS.get(column, "w"),
+                )
+            if hasattr(self, "mods_tree_xscroll"):
+                self.mods_tree_xscroll.grid()
+            return
+
+        weights = {
+            "mod_name": 4,
+            "game_name": 3,
+            "release_channel_id": 2,
+            "message_tag": 2,
+            "release_channel_override": 2,
+            "message_tag_override": 2,
+            "curseforge_updated_at": 2,
+            "latest_date": 2,
+        }
+        visible_weights = {column: weights.get(column, 1) for column in visible_columns}
+        total_weight = sum(visible_weights.values())
+        extra_width = available_width - base_total
+        used_width = 0
+
+        for index, column in enumerate(visible_columns):
+            if index == len(visible_columns) - 1:
+                width = max(base_widths[column], available_width - used_width)
+            else:
+                width = base_widths[column] + int(extra_width * visible_weights[column] / total_weight)
+                used_width += width
+            self.mods_tree.column(
+                column,
+                width=width,
+                minwidth=50,
+                stretch=False,
+                anchor=MOD_COLUMN_ANCHORS.get(column, "w"),
+            )
+
+        if hasattr(self, "mods_tree_xscroll"):
+            self.mods_tree.xview_moveto(0)
+            self.mods_tree_xscroll.grid_remove()
+
+    def _toggle_mod_column_visibility(self, column: str) -> bool:
+        if column not in MOD_COLUMN_LABELS:
+            return False
         if column in self.mod_visible_columns:
             if len(self.mod_visible_columns) == 1:
                 self._set_notice("At least one tracked-mod column must stay visible.")
-                return
+                return False
             self.mod_visible_columns = [current for current in self.mod_visible_columns if current != column]
         else:
             ordered_visible = [current for current in self.mod_column_order if current in self.mod_visible_columns]
@@ -1688,33 +1763,103 @@ class BotManagerApp:
             self.mod_visible_columns = ordered_visible
         self._apply_mod_columns()
         self._save_ui_state()
+        return True
 
     def _reset_mod_columns(self) -> None:
         self.mod_column_order = list(MOD_COLUMN_LABELS)
         self.mod_visible_columns = list(MOD_DEFAULT_VISIBLE_COLUMNS)
         self._apply_mod_columns()
         self._save_ui_state()
+        self._refresh_mod_column_menu_checks()
 
     def _show_mod_column_menu(self, event) -> None:
-        menu = tk.Menu(
-            self.root,
-            tearoff=0,
+        self._close_mod_column_menu()
+
+        popup = tk.Toplevel(self.root)
+        popup.overrideredirect(True)
+        popup.configure(bg=BORDER)
+        popup.bind("<Escape>", lambda _event: self._close_mod_column_menu())
+        self.mod_column_menu_window = popup
+        self.mod_column_menu_vars = {}
+
+        body = tk.Frame(popup, bg=CONTROL, padx=8, pady=8)
+        body.pack(fill="both", expand=True, padx=1, pady=1)
+        tk.Label(
+            body,
+            text="Tracked mod columns",
             bg=CONTROL,
+            fg=MUTED,
+            font=("Segoe UI Semibold", 9),
+        ).pack(anchor="w", padx=6, pady=(2, 6))
+
+        for column, label in MOD_COLUMN_LABELS.items():
+            checked = tk.BooleanVar(value=column in self.mod_visible_columns)
+            self.mod_column_menu_vars[column] = checked
+            tk.Checkbutton(
+                body,
+                text=label,
+                variable=checked,
+                command=lambda current=column: self._toggle_mod_column_from_menu(current),
+                bg=CONTROL,
+                fg=TEXT,
+                activebackground=SELECTION,
+                activeforeground=TEXT,
+                selectcolor=CONTROL,
+                relief="flat",
+                borderwidth=0,
+                highlightthickness=0,
+                anchor="w",
+                font=("Segoe UI", 10),
+            ).pack(fill="x", padx=4, pady=1)
+
+        tk.Frame(body, bg=BORDER, height=1).pack(fill="x", padx=4, pady=7)
+        reset_button = tk.Button(
+            body,
+            text="Reset Columns",
+            command=self._reset_mod_columns,
+            bg=BUTTON_BG,
             fg=TEXT,
-            activebackground=SELECTION,
+            activebackground=BUTTON_HOVER,
             activeforeground=TEXT,
             relief="flat",
             borderwidth=0,
+            highlightthickness=0,
+            font=("Segoe UI Semibold", 10),
         )
-        for column, label in MOD_COLUMN_LABELS.items():
-            prefix = "[x]" if column in self.mod_visible_columns else "[ ]"
-            menu.add_command(label=f"{prefix} {label}", command=lambda current=column: self._toggle_mod_column_visibility(current))
-        menu.add_separator()
-        menu.add_command(label="Reset Columns", command=self._reset_mod_columns)
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
+        reset_button.pack(fill="x", padx=4, pady=(0, 4))
+        close_button = tk.Button(
+            body,
+            text="Close",
+            command=self._close_mod_column_menu,
+            bg=CONTROL_ALT,
+            fg=TEXT,
+            activebackground=BUTTON_HOVER,
+            activeforeground=TEXT,
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            font=("Segoe UI", 10),
+        )
+        close_button.pack(fill="x", padx=4)
+
+        popup.update_idletasks()
+        popup.geometry(f"+{event.x_root}+{event.y_root}")
+        popup.lift()
+        popup.focus_force()
+
+    def _toggle_mod_column_from_menu(self, column: str) -> None:
+        self._toggle_mod_column_visibility(column)
+        self._refresh_mod_column_menu_checks()
+
+    def _refresh_mod_column_menu_checks(self) -> None:
+        for column, var in self.mod_column_menu_vars.items():
+            var.set(column in self.mod_visible_columns)
+
+    def _close_mod_column_menu(self) -> None:
+        if self.mod_column_menu_window is not None and self.mod_column_menu_window.winfo_exists():
+            self.mod_column_menu_window.destroy()
+        self.mod_column_menu_window = None
+        self.mod_column_menu_vars = {}
 
     def _on_mod_heading_press(self, event) -> None:
         if self.mods_tree.identify_region(event.x, event.y) != "heading":
@@ -1940,6 +2085,7 @@ class BotManagerApp:
         if self.mods_tree.identify_region(event.x, event.y) == "heading":
             self._show_mod_column_menu(event)
             return
+        self._close_mod_column_menu()
         row_id = self.mods_tree.identify_row(event.y)
         if not row_id:
             return
@@ -2078,6 +2224,10 @@ class BotManagerApp:
         self._on_close()
 
     def _on_close(self) -> None:
+        self._close_mod_column_menu()
+        if self._fit_mod_columns_after_id is not None:
+            self.root.after_cancel(self._fit_mod_columns_after_id)
+            self._fit_mod_columns_after_id = None
         self._save_window_geometry()
         self._save_ui_state()
         self._control_stop_event.set()
