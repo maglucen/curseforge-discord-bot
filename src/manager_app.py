@@ -38,6 +38,7 @@ BUTTON_PRESSED = "#2D384C"
 MOD_COLUMN_LABELS = {
     "following": "Following",
     "mod_name": "Mod",
+    "author_name": "Author",
     "game_name": "Game",
     "mod_id": "MOD_ID",
     "download_count": "Downloads",
@@ -55,6 +56,7 @@ MOD_COLUMN_LABELS = {
 MOD_DEFAULT_VISIBLE_COLUMNS = [
     "following",
     "mod_name",
+    "author_name",
     "game_name",
     "mod_id",
     "download_count",
@@ -65,6 +67,7 @@ MOD_DEFAULT_VISIBLE_COLUMNS = [
 MOD_COLUMN_WIDTHS = {
     "following": 88,
     "mod_name": 240,
+    "author_name": 160,
     "game_name": 170,
     "mod_id": 110,
     "download_count": 100,
@@ -426,6 +429,9 @@ class BotManagerApp:
             MOD_COLUMN_LABELS,
             MOD_DEFAULT_VISIBLE_COLUMNS,
         )
+        if "author_name" not in (ui_state.get("mod_column_order") or []) and "author_name" not in self.mod_visible_columns:
+            insert_at = self.mod_visible_columns.index("mod_name") + 1 if "mod_name" in self.mod_visible_columns else len(self.mod_visible_columns)
+            self.mod_visible_columns.insert(insert_at, "author_name")
         self._mod_drag_column: str | None = None
         self._mod_drag_started = False
         self.mod_sort_column, self.mod_sort_direction = self._normalize_sort_state(
@@ -1315,6 +1321,7 @@ class BotManagerApp:
                 values=(
                     "\u2611" if summary.following else "\u2610",
                     summary.mod_name,
+                    summary.author_name,
                     summary.game_name,
                     summary.mod_id,
                     summary.download_count,
@@ -1590,6 +1597,8 @@ class BotManagerApp:
                 return 1 if summary.following else 0
             if self.mod_sort_column == "mod_name":
                 return summary.mod_name.lower()
+            if self.mod_sort_column == "author_name":
+                return summary.author_name.lower()
             if self.mod_sort_column == "game_name":
                 return summary.game_name.lower()
             if self.mod_sort_column == "mod_id":
@@ -1718,6 +1727,7 @@ class BotManagerApp:
 
         weights = {
             "mod_name": 4,
+            "author_name": 2,
             "game_name": 3,
             "release_channel_id": 2,
             "message_tag": 2,

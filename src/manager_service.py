@@ -67,6 +67,7 @@ class ReleaseRecord:
 class ModReleaseSummary:
     mod_id: str
     mod_name: str
+    author_name: str
     game_id: str
     game_name: str
     release_channel_id: str
@@ -375,8 +376,22 @@ def _resolve_message_tag_for_mod(
     return config.message_tag
 
 
+def _derive_author_name(mod_info: dict) -> str:
+    authors = mod_info.get("authors") or []
+    names: list[str] = []
+    if isinstance(authors, list):
+        for author in authors:
+            if not isinstance(author, dict):
+                continue
+            name = str(author.get("name") or author.get("displayName") or author.get("username") or "").strip()
+            if name and name not in names:
+                names.append(name)
+    return ", ".join(names) if names else "-"
+
+
 def _cache_mod_info(mod_id: str, mod_info: dict) -> str:
     mod_name = str(mod_info.get("name") or mod_id)
+    author_name = _derive_author_name(mod_info)
     updated_at = str(mod_info.get("dateModified") or mod_info.get("dateReleased") or "")
     game_id = str(mod_info.get("gameId") or "")
     links = mod_info.get("links") or {}
@@ -384,6 +399,7 @@ def _cache_mod_info(mod_id: str, mod_info: dict) -> str:
     game_name = _derive_game_name(game_id, website_url)
     cached_info = {
         "mod_name": mod_name,
+        "author_name": author_name,
         "game_id": game_id,
         "game_name": game_name,
         "curseforge_updated_at": updated_at,
@@ -725,6 +741,7 @@ def list_tracked_releases() -> list[ModReleaseSummary]:
             ModReleaseSummary(
                 mod_id=mod_id,
                 mod_name=str(cached_info.get("mod_name", mod_names.get(mod_id, mod_id))),
+                author_name=str(cached_info.get("author_name", "-")),
                 game_id=game_id,
                 game_name=game_name,
                 release_channel_id=_resolve_release_channel_for_mod(

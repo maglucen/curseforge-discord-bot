@@ -16,7 +16,7 @@ Original project: [jordan-dalby/CICDodo](https://github.com/jordan-dalby/CICDodo
 - supports global, per-game, and per-mod mention tags
 - stores already-announced versions so releases are not posted twice
 - lets you mark which configured mods are currently followed
-- resolves mod names, game names, downloads, likes, CurseForge links, and stored versions
+- resolves mod names, authors, game names, downloads, likes, CurseForge links, and stored versions
 - includes buttons for setup, start, stop, restart, one-time checks, and test messages
 - lets you add or remove tracked mods from the UI by MOD_ID or by searching CurseForge
 - can send the latest release for a selected mod to debug or release channels
@@ -132,6 +132,7 @@ From here you can:
 - search CurseForge by mod name and add a selected result
 - remove a selected mod from tracking
 - toggle whether a mod is currently followed
+- see the author for tracked mods, including projects that are not yours
 - sort the table by clicking column headers
 - drag tracked-mod columns to reorder them
 - right-click a header to choose which columns are visible
