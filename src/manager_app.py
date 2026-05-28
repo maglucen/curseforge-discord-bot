@@ -2506,22 +2506,32 @@ class BotManagerApp:
 
     def _open_mod_search_window(self, query: str) -> None:
         if self.mod_search_window is not None and self.mod_search_window.winfo_exists():
+            self.mod_search_window.minsize(1040, 680)
+            self.mod_search_window.geometry("1120x700")
             self.mod_search_window.deiconify()
             self.mod_search_window.lift()
             return
 
         window = tk.Toplevel(self.root)
         window.title("Search CurseForge Mods")
-        window.geometry("1120x660")
-        window.minsize(980, 620)
+        window.geometry("1120x700")
+        window.minsize(1040, 680)
         window.configure(bg=BG)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
         window.protocol("WM_DELETE_WINDOW", self._close_mod_search_window)
         self.mod_search_window = window
 
-        outer, body = self._create_surface(window, bg=PANEL_ALT, padding=18)
-        outer.pack(fill="both", expand=True, padx=16, pady=16)
+        outer = tk.Frame(window, bg=BORDER, bd=0, highlightthickness=0)
+        outer.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        body = tk.Frame(outer, bg=PANEL_ALT, bd=0, highlightthickness=0, padx=18, pady=18)
+        body.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
         body.columnconfigure(0, weight=1)
         body.rowconfigure(2, weight=1)
+        body.rowconfigure(3, minsize=52)
 
         tk.Label(body, text="Search CurseForge Mods", bg=PANEL_ALT, fg=TEXT, font=("Segoe UI Semibold", 18)).grid(row=0, column=0, sticky="w")
         tk.Label(
@@ -2580,7 +2590,10 @@ class BotManagerApp:
         window.update_idletasks()
         requested_width = outer.winfo_reqwidth() + 32
         requested_height = outer.winfo_reqheight() + 32
-        window.minsize(max(980, requested_width), max(620, requested_height))
+        final_width = max(1120, requested_width)
+        final_height = max(700, requested_height)
+        window.minsize(max(1040, requested_width), max(680, requested_height))
+        window.geometry(f"{final_width}x{final_height}")
 
     def _close_mod_search_window(self) -> None:
         if self.mod_search_window is not None and self.mod_search_window.winfo_exists():
