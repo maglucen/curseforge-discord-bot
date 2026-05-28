@@ -4,6 +4,8 @@ Desktop-managed Discord bot for tracking CurseForge mod releases and posting upd
 
 This is my fork of CICDodo, adapted for my own modding workflow. The original bot focused on monitoring CurseForge projects and announcing new releases. This version adds a Windows manager UI, per-game/per-mod Discord routing, easier tracked-mod management, release testing tools, and basic stats for the mods being followed.
 
+Original project: [jordan-dalby/CICDodo](https://github.com/jordan-dalby/CICDodo)
+
 ![CurseForge Discord Bot Manager](docs/screenshots/manager.png)
 
 ## What It Does
