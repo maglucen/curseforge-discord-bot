@@ -381,6 +381,7 @@ class BotManagerApp:
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.action_lock = threading.Lock()
         self.follow_logs = tk.BooleanVar(value=True)
+        self.safe_screenshot_mode = tk.BooleanVar(value=bool(ui_state.get("safe_screenshot_mode", False)))
         self.new_mod_id = tk.StringVar(value="")
         self.mod_search_text = tk.StringVar(value="")
         self.mod_search_status_text = tk.StringVar(value="")
@@ -405,6 +406,7 @@ class BotManagerApp:
         self.game_message_tag_vars: dict[str, tk.StringVar] = {}
         self.game_name_by_id: dict[str, str] = {}
         self.game_defaults_frame: tk.Frame | None = None
+        self.sensitive_entry_widgets: list[tk.Entry] = []
         self.last_log_snapshot = ""
         self.last_log_signature: tuple[bool, int] | None = None
         self.release_summaries: list[manager_service.ModReleaseSummary] = []
@@ -794,7 +796,14 @@ class BotManagerApp:
     def _create_button(self, parent: tk.Misc, *, text: str, command, accent: bool = False) -> RoundedButton:
         return RoundedButton(parent, text=text, command=command, accent=accent)
 
-    def _create_entry(self, parent: tk.Misc, *, textvariable: tk.StringVar, width: int | None = None) -> tk.Frame:
+    def _create_entry(
+        self,
+        parent: tk.Misc,
+        *,
+        textvariable: tk.StringVar,
+        width: int | None = None,
+        sensitive: bool = False,
+    ) -> tk.Frame:
         outer, body = self._create_surface(parent, bg=CONTROL, padding=10, radius=12)
         entry = tk.Entry(
             body,
@@ -807,8 +816,11 @@ class BotManagerApp:
             highlightthickness=0,
             font=("Segoe UI", 10),
             width=width,
+            show="*" if sensitive and self.safe_screenshot_mode.get() else "",
         )
         entry.pack(fill="x", expand=True)
+        if sensitive:
+            self.sensitive_entry_widgets.append(entry)
         return outer
 
     def _create_detail_metric(
@@ -876,6 +888,7 @@ class BotManagerApp:
             "stats_sort_direction": self.stats_sort_direction,
             "version_sort_column": self.version_sort_column,
             "version_sort_direction": self.version_sort_direction,
+            "safe_screenshot_mode": self.safe_screenshot_mode.get(),
         }
         try:
             UI_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -1210,32 +1223,38 @@ class BotManagerApp:
         settings_panel.grid(row=0, column=0, sticky="nsew")
         settings_content.columnconfigure(1, weight=1)
         ttk.Label(settings_content, text="Message Tag", style="Panel.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
-        self._create_entry(settings_content, textvariable=self.setting_message_tag).grid(row=0, column=1, sticky="ew", pady=(0, 8))
+        self._create_entry(settings_content, textvariable=self.setting_message_tag, sensitive=True).grid(row=0, column=1, sticky="ew", pady=(0, 8))
         ttk.Label(settings_content, text="Debug Channel ID", style="Panel.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 8))
-        self._create_entry(settings_content, textvariable=self.setting_debug_channel_id).grid(row=1, column=1, sticky="ew", pady=(0, 8))
+        self._create_entry(settings_content, textvariable=self.setting_debug_channel_id, sensitive=True).grid(row=1, column=1, sticky="ew", pady=(0, 8))
         ttk.Label(settings_content, text="Check Interval (minutes)", style="Panel.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 8))
         self._create_entry(settings_content, textvariable=self.setting_check_interval_minutes).grid(row=2, column=1, sticky="ew", pady=(0, 8))
         ttk.Checkbutton(settings_content, text="Publish announcement messages", variable=self.setting_announce_messages).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 6))
         ttk.Checkbutton(settings_content, text="Add reactions", variable=self.setting_add_reactions).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        ttk.Checkbutton(
+            settings_content,
+            text="Safe screenshot mode (hide Discord IDs and mention tags)",
+            variable=self.safe_screenshot_mode,
+            command=self._toggle_safe_screenshot_mode,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 12))
         tk.Label(
             settings_content,
             text="Per-game defaults",
             bg=CONTROL_ALT,
             fg=TEXT,
             font=("Segoe UI Semibold", 16),
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(22, 10))
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(22, 10))
         self.game_defaults_frame = tk.Frame(settings_content, bg=CONTROL_ALT)
-        self.game_defaults_frame.grid(row=6, column=0, columnspan=2, sticky="ew")
+        self.game_defaults_frame.grid(row=7, column=0, columnspan=2, sticky="ew")
         self.game_defaults_frame.columnconfigure(1, weight=1)
         self.game_defaults_frame.columnconfigure(2, weight=1)
-        self._create_button(settings_content, text="Save Settings", command=self._save_settings, accent=True).grid(row=7, column=0, sticky="w", pady=(16, 0))
+        self._create_button(settings_content, text="Save Settings", command=self._save_settings, accent=True).grid(row=8, column=0, sticky="w", pady=(16, 0))
         tk.Label(
             settings_content,
             text="Restart the bot after saving settings to apply them.",
             bg=CONTROL_ALT,
             fg=MUTED,
             font=("Segoe UI", 10),
-        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         stats_panel, stats_content = self._create_panel(
             stats_tab,
@@ -1331,10 +1350,10 @@ class BotManagerApp:
                     summary.latest_version,
                     summary.latest_date,
                     len(summary.versions),
-                    summary.release_channel_id or "-",
-                    summary.message_tag or "-",
-                    summary.release_channel_override or "-",
-                    summary.message_tag_override or "-",
+                    self._sensitive_display(summary.release_channel_id),
+                    self._sensitive_display(summary.message_tag),
+                    self._sensitive_display(summary.release_channel_override),
+                    self._sensitive_display(summary.message_tag_override),
                 ),
             )
 
@@ -1379,10 +1398,30 @@ class BotManagerApp:
     def _on_mod_selected(self, _event=None) -> None:
         return
 
+    def _sensitive_display(self, value: str) -> str:
+        if not value:
+            return "-"
+        return "<hidden>" if self.safe_screenshot_mode.get() else value
+
+    def _apply_safe_screenshot_mode(self) -> None:
+        show_value = "*" if self.safe_screenshot_mode.get() else ""
+        self.sensitive_entry_widgets = [entry for entry in self.sensitive_entry_widgets if entry.winfo_exists()]
+        for entry in self.sensitive_entry_widgets:
+            entry.configure(show=show_value)
+
+    def _toggle_safe_screenshot_mode(self) -> None:
+        self._apply_safe_screenshot_mode()
+        self._save_ui_state()
+        if self.release_summaries:
+            self._apply_release_summaries(self.release_summaries)
+        else:
+            self._render_game_defaults()
+
     def _render_game_defaults(self) -> None:
         if self.game_defaults_frame is None:
             return
 
+        self.sensitive_entry_widgets = [entry for entry in self.sensitive_entry_widgets if entry.winfo_exists()]
         for child in self.game_defaults_frame.winfo_children():
             child.destroy()
 
@@ -1453,12 +1492,15 @@ class BotManagerApp:
                 self.game_defaults_frame,
                 textvariable=self.game_release_channel_vars[game_id],
                 width=22,
+                sensitive=True,
             ).grid(row=row, column=1, sticky="ew", padx=(8, 18), pady=(0, 8))
             self._create_entry(
                 self.game_defaults_frame,
                 textvariable=self.game_message_tag_vars[game_id],
                 width=28,
+                sensitive=True,
             ).grid(row=row, column=2, sticky="ew", padx=(0, 0), pady=(0, 8))
+        self._apply_safe_screenshot_mode()
 
     def _on_mod_tree_click(self, event):
         row_id = self.mods_tree.identify_row(event.y)

@@ -163,10 +163,13 @@ It includes:
 - check interval
 - announcement toggle
 - reaction toggle
+- safe screenshot mode for hiding Discord IDs and mention tags
 - per-game release channel defaults
 - per-game message tags
 
 The `Per-game defaults` section is generated from the games detected in your currently tracked mods. It is not a fixed hardcoded list. When the app detects a new CurseForge `gameId` from a tracked mod, that game can appear there after refresh.
+
+`Safe screenshot mode` only changes what is displayed in the manager UI. It does not edit `.env`; it masks Discord IDs and mention tags so screenshots can be shared without leaking channel or role IDs.
 
 ![Per-game defaults](docs/screenshots/settings-game-defaults.png)
 
