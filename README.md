@@ -18,7 +18,7 @@ Original project: [jordan-dalby/CICDodo](https://github.com/jordan-dalby/CICDodo
 - lets you mark which configured mods are currently followed
 - resolves mod names, game names, downloads, likes, CurseForge links, and stored versions
 - includes buttons for setup, start, stop, restart, one-time checks, and test messages
-- lets you add or remove tracked mods from the UI
+- lets you add or remove tracked mods from the UI by MOD_ID or by searching CurseForge
 - can send the latest release for a selected mod to debug or release channels
 - opens public CurseForge pages, author file pages, comments, logs, and project folder
 
@@ -82,6 +82,98 @@ The manager is the intended way to use this fork locally.
 It can create the Python environment, start/stop the bot, run a one-time update check, send test messages, inspect logs, manage tracked mods, toggle following state, set per-mod overrides, and review stored versions.
 
 The UI saves its own window placement and sort/tab preferences locally under `.local/`, so those files do not pollute the repository.
+
+### Sidebar
+
+The sidebar shows the current process and runtime state:
+
+- whether the bot is running or stopped
+- current bot PID
+- virtual environment status
+- log file status
+- release database status
+- latest check activity
+- latest release notification
+- latest error
+- tracked/followed mod counts
+
+Use the sidebar actions for the day-to-day workflow:
+
+- `Setup`: creates `.local/.venv` and installs Python dependencies
+- `Start`: starts the Discord bot in the background
+- `Stop`: stops the running bot
+- `Restart`: restarts the bot after config changes
+- `Check Now`: runs one release check immediately
+- `Test Debug`: sends a debug test message
+- `Test Release`: sends the latest release notification as a test
+- `Open Log`: opens the current log file
+- `Open Folder`: opens the project folder
+
+The app prevents duplicate manager windows. Opening the launcher again closes the previous manager window and keeps a single active instance.
+
+### Logs
+
+The `Logs` tab shows the latest bot log output. It is useful for checking API errors, Discord permission issues, release detection, and background task output without opening the log file manually.
+
+### Activity
+
+The `Activity` tab shows output from manager actions such as setup, start, stop, restart, one-time checks, tests, adding mods, removing mods, and failed operations.
+
+### Releases
+
+The `Releases` tab is the main workspace for tracked mods.
+
+From here you can:
+
+- refresh tracked release data
+- send the latest stored release for a selected mod to the release channel
+- send the latest stored release for a selected mod to the debug channel
+- add a mod directly by `MOD_ID`
+- search CurseForge by mod name and add a selected result
+- remove a selected mod from tracking
+- toggle whether a mod is currently followed
+- sort the table by clicking column headers
+- drag tracked-mod columns to reorder them
+- right-click a header to choose which columns are visible
+- right-click a mod row to copy IDs, open pages, edit overrides, or inspect stored versions
+
+Adding by `MOD_ID` is the most reliable path for private, unlisted, or not-yet-indexed projects. Search depends on what the CurseForge API returns for your API key.
+
+Per-mod overrides have priority over per-game defaults. Use them when one specific mod should announce to a different channel or use a different message tag.
+
+### Settings
+
+The `Settings` tab edits the most important `.env` values from the UI.
+
+It includes:
+
+- global message tag
+- debug channel ID
+- check interval
+- announcement toggle
+- reaction toggle
+- per-game release channel defaults
+- per-game message tags
+
+The `Per-game defaults` section is generated from the games detected in your currently tracked mods. It is not a fixed hardcoded list. When the app detects a new CurseForge `gameId` from a tracked mod, that game can appear there after refresh.
+
+### Stats
+
+The `Stats` tab is a compact view for author-facing mod stats and links.
+
+It shows downloads, likes, stored versions, update dates, and quick access to comments. Columns can be sorted, so it is useful for checking which followed projects have the most activity or which ones were updated recently.
+
+### Screenshot Notes
+
+The README currently includes one manager screenshot. More screenshots can be added later for:
+
+- the main dashboard/sidebar
+- the Releases tab with tracked mods
+- the CurseForge search dialog
+- the Settings tab with per-game defaults
+- the Stats tab
+
+Place screenshots under `docs/screenshots/` and reference them from this README.
 
 ## Notes
 
