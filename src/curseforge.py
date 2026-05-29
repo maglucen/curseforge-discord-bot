@@ -9,7 +9,6 @@ from urllib.parse import urlencode
 
 class CurseForgeAPI:
     BASE_URL = "https://api.curseforge.com/v1"
-    GAME_ID_ARK_SA = 828326  # Game ID for ARK: Survival Ascended
 
     def __init__(self, api_key: str):
         logging.debug("Initializing CurseForgeAPI with api_key.")
@@ -87,8 +86,7 @@ class CurseForgeAPI:
         logging.debug(f"Fetching mod files for mod_id: {mod_id}")
         response = await self._make_request(
             f"/mods/{mod_id}/files"
-            f"?gameId={self.GAME_ID_ARK_SA}"
-            "&orderBy=dateCreated&sortOrder=desc"
+            "?orderBy=dateCreated&sortOrder=desc"
         )
         mod_files = response['data']
         logging.debug(f"Mod files: {mod_files}")

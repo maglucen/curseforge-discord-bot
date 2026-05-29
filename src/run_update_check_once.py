@@ -5,10 +5,9 @@ import discord
 
 from src.config import config
 from src.curseforge import CurseForgeAPI
-from src.release_embed import build_release_embed
+from src.discord_delivery import send_release_message as deliver_release_message
 from src.storage import ReleaseStorage
 
-DEFAULT_REACTIONS = ["❤️"]
 async def send_release_message(
     client: discord.Client,
     mod_id: int,
@@ -22,29 +21,7 @@ async def send_release_message(
         print(f"Could not find channel with ID {channel_id} for mod {mod_id}.")
         return False
 
-    embed = build_release_embed(mod_info, latest_file)
-    message = await channel.send(
-        content=config.resolve_message_tag(mod_id, int(game_id) if game_id else None) or "",
-        embed=embed,
-        allowed_mentions=discord.AllowedMentions(roles=True, everyone=True),
-    )
-
-    if config.add_reactions:
-        for reaction in DEFAULT_REACTIONS:
-            try:
-                await message.add_reaction(reaction)
-            except discord.errors.Forbidden:
-                print(f"Missing permissions to add reaction {reaction}.")
-            except discord.errors.HTTPException:
-                print(f"Failed to add reaction {reaction}.")
-
-    if config.announce_messages and not config.debug:
-        try:
-            await message.publish()
-        except discord.errors.Forbidden:
-            print("Missing permissions to publish the message.")
-        except discord.errors.HTTPException:
-            print("Failed to publish message; channel is probably not a news channel.")
+    await deliver_release_message(channel, mod_id, mod_info, latest_file)
 
     print(f"Sent release notification for {mod_info['name']} version {latest_file['version']}.")
     return True

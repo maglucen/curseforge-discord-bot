@@ -7,10 +7,8 @@ from discord.ext import commands, tasks
 
 from src.config import config
 from src.curseforge import CurseForgeAPI
-from src.release_embed import build_release_embed
+from src.discord_delivery import send_release_message
 from src.storage import ReleaseStorage
-
-DEFAULT_REACTIONS = ["❤️"]
 
 
 class ModUpdateCog(commands.Cog):
@@ -28,37 +26,6 @@ class ModUpdateCog(commands.Cog):
         logging.debug("Unloading ModUpdateCog")
         self.check_updates.cancel()
 
-    async def send_message(
-        self,
-        channel: discord.TextChannel,
-        content: str,
-        embed: Optional[discord.Embed] = None,
-    ) -> None:
-        """Send a message to the specified channel with optional embed and reactions."""
-        logging.debug(f"Sending message to channel: {channel.name}")
-        message = await channel.send(content=content, embed=embed)
-        logging.debug("Message sent successfully")
-
-        if config.add_reactions:
-            for reaction in DEFAULT_REACTIONS:
-                try:
-                    await message.add_reaction(reaction)
-                    logging.debug(f"Added reaction {reaction} to message")
-                except discord.errors.Forbidden:
-                    logging.error("Failed to add reaction - missing permissions")
-                except discord.errors.HTTPException:
-                    logging.error(f"Failed to add reaction {reaction}")
-
-            if config.announce_messages and not config.debug:
-                logging.debug("Attempting to publish message")
-                try:
-                    await message.publish()
-                    logging.debug("Message published successfully")
-                except discord.errors.Forbidden:
-                    logging.error("Failed to publish message - missing permissions")
-                except discord.errors.HTTPException:
-                    logging.error("Failed to publish message - not in news channel")
-
     async def send_release_notification(
         self,
         mod_id: int,
@@ -75,7 +42,6 @@ class ModUpdateCog(commands.Cog):
             game_id = mod_info.get("gameId")
             version = latest_file["version"]
             logging.debug(f"Found version {version} for mod {mod_info['name']}")
-            embed = build_release_embed(mod_info, latest_file)
 
             if channel is None:
                 if config.debug:
@@ -94,11 +60,7 @@ class ModUpdateCog(commands.Cog):
                     logging.error(f"Channel not found for mod {mod_id}")
                     return False
 
-            await self.send_message(
-                channel=channel,
-                content=config.resolve_message_tag(mod_id, int(game_id) if game_id else None),
-                embed=embed,
-            )
+            await send_release_message(channel, mod_id, mod_info, latest_file)
 
             logging.info(f"Successfully sent release notification for {mod_info['name']} version {version}")
             return True

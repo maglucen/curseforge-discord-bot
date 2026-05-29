@@ -5,7 +5,7 @@ import discord
 
 from src.config import config
 from src.curseforge import CurseForgeAPI
-from src.release_embed import build_release_embed
+from src.discord_delivery import send_release_message
 
 
 async def main():
@@ -31,8 +31,6 @@ async def main():
         sys.exit(1)
 
     mod_info = await cf_api.get_mod_info(mod_id)
-    game_id = mod_info.get("gameId")
-    embed = build_release_embed(mod_info, latest_file)
 
     intents = discord.Intents.default()
     client = discord.Client(intents=intents)
@@ -46,11 +44,7 @@ async def main():
                 await client.close()
                 return
 
-            await channel.send(
-                content=config.resolve_message_tag(mod_id, int(game_id) if game_id else None) or "",
-                embed=embed,
-                allowed_mentions=discord.AllowedMentions(roles=True, everyone=True),
-            )
+            await send_release_message(channel, mod_id, mod_info, latest_file, target="debug")
             print(
                 f"Latest release test sent to channel {config.debug_channel_id} "
                 f"for mod {mod_info['name']} (MOD_ID {mod_id})."

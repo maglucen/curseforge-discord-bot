@@ -6,9 +6,8 @@ import discord
 
 from src.config import config
 from src.curseforge import CurseForgeAPI
-from src.release_embed import build_release_embed
+from src.discord_delivery import send_release_message
 
-DEFAULT_REACTIONS = ["❤️"]
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mod-id", type=int, required=True)
@@ -39,7 +38,6 @@ async def main() -> None:
 
     mod_info = await cf_api.get_mod_info(args.mod_id)
     game_id = mod_info.get("gameId")
-    embed = build_release_embed(mod_info, latest_file)
 
     if args.target == "debug":
         channel_id = config.debug_channel_id
@@ -58,28 +56,7 @@ async def main() -> None:
                 await client.close()
                 return
 
-            message = await channel.send(
-                content=config.resolve_message_tag(args.mod_id, int(game_id) if game_id else None) or "",
-                embed=embed,
-                allowed_mentions=discord.AllowedMentions(roles=True, everyone=True),
-            )
-
-            if config.add_reactions:
-                for reaction in DEFAULT_REACTIONS:
-                    try:
-                        await message.add_reaction(reaction)
-                    except discord.errors.Forbidden:
-                        print(f"Missing permissions to add reaction {reaction}.")
-                    except discord.errors.HTTPException:
-                        print(f"Failed to add reaction {reaction}.")
-
-                if config.announce_messages and args.target == "release" and not config.debug:
-                    try:
-                        await message.publish()
-                    except discord.errors.Forbidden:
-                        print("Missing permissions to publish the message.")
-                    except discord.errors.HTTPException:
-                        print("Failed to publish message; channel is probably not a news channel.")
+            await send_release_message(channel, args.mod_id, mod_info, latest_file, target=args.target)
 
             print(
                 f"Latest release sent to {args.target} channel {channel_id} "

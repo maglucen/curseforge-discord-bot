@@ -35,6 +35,12 @@ SELECTION = "#214D56"
 BUTTON_BG = "#1E2430"
 BUTTON_HOVER = "#263041"
 BUTTON_PRESSED = "#2D384C"
+DISCORD_BG = "#313338"
+DISCORD_EMBED = "#2B2D31"
+DISCORD_TEXT = "#DBDEE1"
+DISCORD_MUTED = "#B5BAC1"
+DISCORD_LINK = "#00A8FC"
+DISCORD_GREEN = "#57F287"
 MOD_COLUMN_LABELS = {
     "following": "Following",
     "mod_name": "Mod",
@@ -124,6 +130,7 @@ SORT_ARROW_DESC = " \u25bc"
 RELEASE_SENT_MARKER = "Successfully sent release notification for"
 AUTHOR_DASHBOARD_URL = "https://authors.curseforge.com/#/downloads-statistics"
 CONFIRMATION_WINDOW_SECONDS = 5.0
+DEFAULT_REACTION_PREVIEW = "\u2764\ufe0f"
 
 
 def _rounded_rect_points(x1: float, y1: float, x2: float, y2: float, radius: float) -> list[float]:
@@ -310,6 +317,15 @@ class RoundedButton(tk.Canvas):
         self._selected = selected
         self._redraw()
 
+    def set_text(self, text: str) -> None:
+        self._text = text
+        self.itemconfigure(self._text_id, text=text)
+        self._sync_requested_size()
+        self._redraw()
+
+    def set_command(self, command) -> None:
+        self._command = command
+
     def _redraw(self, _event=None) -> None:
         width = max(self.winfo_width(), int(self.cget("width")))
         height = max(self.winfo_height(), int(self.cget("height")))
@@ -360,6 +376,56 @@ class RoundedButton(tk.Canvas):
                 self._command()
 
 
+class Tooltip:
+    def __init__(self, widget: tk.Widget, text: str, *, delay_ms: int = 450) -> None:
+        self.widget = widget
+        self.text = text
+        self.delay_ms = delay_ms
+        self._after_id: str | None = None
+        self._window: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _event=None) -> None:
+        self._cancel()
+        self._after_id = self.widget.after(self.delay_ms, self._show)
+
+    def _cancel(self) -> None:
+        if self._after_id is not None:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+
+    def _show(self) -> None:
+        if self._window is not None or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 16
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        window = tk.Toplevel(self.widget)
+        window.wm_overrideredirect(True)
+        window.configure(bg=BORDER)
+        body = tk.Label(
+            window,
+            text=self.text,
+            bg=CONTROL,
+            fg=TEXT,
+            justify="left",
+            wraplength=360,
+            padx=10,
+            pady=8,
+            font=("Segoe UI", 9),
+        )
+        body.pack(padx=1, pady=1)
+        window.wm_geometry(f"+{x}+{y}")
+        self._window = window
+
+    def _hide(self, _event=None) -> None:
+        self._cancel()
+        if self._window is not None:
+            self._window.destroy()
+            self._window = None
+
+
 class BotManagerApp:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -384,7 +450,15 @@ class BotManagerApp:
         self.safe_screenshot_mode = tk.BooleanVar(value=bool(ui_state.get("safe_screenshot_mode", False)))
         self.new_mod_id = tk.StringVar(value="")
         self.mod_search_text = tk.StringVar(value="")
+        self.mod_search_mode = tk.StringVar(value="Mod name")
+        self.mod_search_game = tk.StringVar(value="All games")
         self.mod_search_status_text = tk.StringVar(value="")
+        self.mod_filter_text = tk.StringVar(value="")
+        self.mod_filter_game = tk.StringVar(value="All games")
+        self.mod_filter_following_only = tk.BooleanVar(value=False)
+        self.mod_filter_missing_versions_only = tk.BooleanVar(value=False)
+        self.log_filter_text = tk.StringVar(value="")
+        self.log_level_filter = tk.StringVar(value="All")
         self.new_release_channel_id = tk.StringVar(value="")
         self.status_text = tk.StringVar(value="Checking...")
         self.pid_text = tk.StringVar(value="-")
@@ -402,20 +476,31 @@ class BotManagerApp:
         self.setting_announce_messages = tk.BooleanVar(value=current_settings.announce_messages)
         self.setting_add_reactions = tk.BooleanVar(value=current_settings.add_reactions)
         self.setting_check_interval_minutes = tk.StringVar(value=current_settings.check_interval_minutes)
+        self.setting_message_header = tk.StringVar(value=current_settings.message_header)
+        self.setting_message_footer = tk.StringVar(value=current_settings.message_footer)
+        self.setting_show_logo = tk.BooleanVar(value=current_settings.show_logo)
+        self.setting_logo_style = tk.StringVar(value=current_settings.logo_style)
+        self.setting_log_level = tk.StringVar(value=current_settings.log_level)
+        self.setting_message_content_intent = tk.BooleanVar(value=current_settings.message_content_intent)
         self.game_release_channel_vars: dict[str, tk.StringVar] = {}
         self.game_message_tag_vars: dict[str, tk.StringVar] = {}
         self.game_name_by_id: dict[str, str] = {}
         self.game_defaults_frame: tk.Frame | None = None
         self.sensitive_entry_widgets: list[tk.Entry] = []
         self.last_log_snapshot = ""
+        self.last_log_display = ""
         self.last_log_signature: tuple[bool, int] | None = None
         self.release_summaries: list[manager_service.ModReleaseSummary] = []
         self.mod_search_results: list[manager_service.ModSearchResult] = []
         self.mod_search_window: tk.Toplevel | None = None
         self.mod_search_tree: ttk.Treeview | None = None
+        self.mod_search_game_combo: ttk.Combobox | None = None
         self.mod_column_menu_window: tk.Toplevel | None = None
         self.mod_column_menu_vars: dict[str, tk.BooleanVar] = {}
         self.pending_confirmations: dict[str, float] = {}
+        self.setup_button: RoundedButton | None = None
+        self.start_stop_button: RoundedButton | None = None
+        self.app_canvas: tk.Canvas | None = None
         self.sidebar_panes: tk.PanedWindow | None = None
         self.releases_panes: tk.PanedWindow | None = None
         self.tab_frames: dict[str, tk.Frame] = {}
@@ -669,6 +754,29 @@ class BotManagerApp:
             padding=(10, 8),
         )
         style.configure(
+            "TCombobox",
+            fieldbackground=CONTROL,
+            background=CONTROL,
+            foreground=TEXT,
+            selectbackground=CONTROL,
+            selectforeground=TEXT,
+            insertcolor=TEXT,
+            arrowcolor=TEXT,
+            bordercolor=BORDER,
+            lightcolor=BORDER,
+            darkcolor=BORDER,
+            padding=(8, 6),
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", CONTROL), ("active", CONTROL)],
+            background=[("readonly", CONTROL), ("active", CONTROL_ALT)],
+            foreground=[("readonly", TEXT), ("active", TEXT)],
+            selectbackground=[("readonly", CONTROL)],
+            selectforeground=[("readonly", TEXT)],
+            arrowcolor=[("readonly", TEXT), ("active", ACCENT)],
+        )
+        style.configure(
             "TCheckbutton",
             background=PANEL,
             foreground=TEXT,
@@ -763,6 +871,10 @@ class BotManagerApp:
         self.root.option_add("*Text.insertBackground", TEXT)
         self.root.option_add("*Text.selectBackground", SELECTION)
         self.root.option_add("*Text.selectForeground", "#ffffff")
+        self.root.option_add("*TCombobox*Listbox.background", CONTROL)
+        self.root.option_add("*TCombobox*Listbox.foreground", TEXT)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", SELECTION)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
 
     def _create_surface(self, parent: tk.Misc, *, bg: str = PANEL, padding: int = 18, radius: int = 18) -> tuple[tk.Frame, tk.Frame]:
         surface = RoundedSurface(parent, bg_fill=bg, border_color=BORDER, padding=padding, radius=radius)
@@ -788,13 +900,16 @@ class BotManagerApp:
         return outer, content
 
     def _create_metric_card(self, parent: tk.Misc, *, title: str, value_var: tk.StringVar) -> tk.Frame:
-        outer, body = self._create_surface(parent, bg=PANEL, padding=18)
-        tk.Label(body, text=title, bg=PANEL, fg=MUTED, font=("Segoe UI", 10)).pack(anchor="w")
-        tk.Label(body, textvariable=value_var, bg=PANEL, fg=TEXT, font=("Segoe UI Semibold", 24)).pack(anchor="w", pady=(6, 0))
+        outer, body = self._create_surface(parent, bg=PANEL, padding=8, radius=10)
+        tk.Label(body, text=title, bg=PANEL, fg=MUTED, font=("Segoe UI", 9)).pack(anchor="w")
+        tk.Label(body, textvariable=value_var, bg=PANEL, fg=TEXT, font=("Segoe UI Semibold", 15)).pack(anchor="w", pady=(2, 0))
         return outer
 
     def _create_button(self, parent: tk.Misc, *, text: str, command, accent: bool = False) -> RoundedButton:
         return RoundedButton(parent, text=text, command=command, accent=accent)
+
+    def _add_tooltip(self, widget: tk.Widget, text: str) -> None:
+        Tooltip(widget, text)
 
     def _create_entry(
         self,
@@ -803,6 +918,7 @@ class BotManagerApp:
         textvariable: tk.StringVar,
         width: int | None = None,
         sensitive: bool = False,
+        on_return=None,
     ) -> tk.Frame:
         outer, body = self._create_surface(parent, bg=CONTROL, padding=10, radius=12)
         entry = tk.Entry(
@@ -819,9 +935,35 @@ class BotManagerApp:
             show="*" if sensitive and self.safe_screenshot_mode.get() else "",
         )
         entry.pack(fill="x", expand=True)
+        if on_return is not None:
+            entry.bind("<Return>", lambda _event: on_return(), add="+")
         if sensitive:
             self.sensitive_entry_widgets.append(entry)
         return outer
+
+    def _create_scrollable_frame(self, parent: tk.Misc, *, bg: str) -> tk.Frame:
+        canvas = tk.Canvas(parent, bg=bg, bd=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        body = tk.Frame(canvas, bg=bg)
+        window_id = canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def sync_scrollregion(_event=None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def sync_width(event) -> None:
+            canvas.itemconfigure(window_id, width=event.width)
+
+        def on_mousewheel(event) -> None:
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        body.bind("<Configure>", sync_scrollregion, add="+")
+        canvas.bind("<Configure>", sync_width, add="+")
+        canvas.bind("<Enter>", lambda _event: canvas.bind_all("<MouseWheel>", on_mousewheel), add="+")
+        canvas.bind("<Leave>", lambda _event: canvas.unbind_all("<MouseWheel>"), add="+")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns", padx=(8, 0))
+        return body
 
     def _create_detail_metric(
         self,
@@ -932,18 +1074,47 @@ class BotManagerApp:
         for name, button in self.tab_buttons.items():
             button.set_selected(name == normalized)
         self._on_tab_changed(normalized)
+        self.root.after_idle(self._refresh_app_scrollregion)
+
+    def _refresh_app_scrollregion(self) -> None:
+        if self.app_canvas is not None:
+            self.root.update_idletasks()
+            self.app_canvas.configure(scrollregion=self.app_canvas.bbox("all"))
 
     def _build_ui(self) -> None:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        shell = tk.Frame(self.root, bg=BG, padx=18, pady=18)
-        shell.grid(row=0, column=0, sticky="nsew")
+        app_canvas = tk.Canvas(self.root, bg=BG, bd=0, highlightthickness=0)
+        self.app_canvas = app_canvas
+        app_canvas.configure(yscrollincrement=18)
+        app_scrollbar = ttk.Scrollbar(self.root, orient="vertical", command=app_canvas.yview)
+        app_canvas.grid(row=0, column=0, sticky="nsew")
+        app_scrollbar.grid(row=0, column=1, sticky="ns")
+        app_canvas.configure(yscrollcommand=app_scrollbar.set)
+
+        shell = tk.Frame(app_canvas, bg=BG, padx=18, pady=14)
+        shell_window = app_canvas.create_window((0, 0), window=shell, anchor="nw")
+
+        def sync_app_scrollregion(_event=None) -> None:
+            app_canvas.configure(scrollregion=app_canvas.bbox("all"))
+
+        def sync_app_width(event) -> None:
+            app_canvas.itemconfigure(shell_window, width=event.width)
+
+        def on_app_mousewheel(event) -> None:
+            direction = -1 if event.delta > 0 else 1
+            app_canvas.yview_scroll(direction, "units")
+
+        shell.bind("<Configure>", sync_app_scrollregion, add="+")
+        app_canvas.bind("<Configure>", sync_app_width, add="+")
+        self.root.bind_all("<MouseWheel>", on_app_mousewheel, add="+")
+
         shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(2, weight=1)
+        shell.rowconfigure(2, weight=0)
 
         header = tk.Frame(shell, bg=BG)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 18))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         header.columnconfigure(0, weight=1)
 
         header_text = tk.Frame(header, bg=BG)
@@ -966,7 +1137,7 @@ class BotManagerApp:
         ).pack(side="right", padx=(0, 10))
 
         metrics_row = tk.Frame(shell, bg=BG)
-        metrics_row.grid(row=1, column=0, sticky="ew", pady=(0, 18))
+        metrics_row.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         for column in range(4):
             metrics_row.columnconfigure(column, weight=1)
 
@@ -979,20 +1150,20 @@ class BotManagerApp:
             ]
         ):
             card = self._create_metric_card(metrics_row, title=title, value_var=value_var)
-            card.grid(row=0, column=index, sticky="nsew", padx=(0, 14 if index < 3 else 0))
+            card.grid(row=0, column=index, sticky="nsew", padx=(0, 10 if index < 3 else 0))
 
         body = tk.Frame(shell, bg=BG)
-        body.grid(row=2, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=0, minsize=360)
+        body.grid(row=2, column=0, sticky="ew")
+        body.columnconfigure(0, weight=0, minsize=330)
         body.columnconfigure(1, weight=1)
-        body.rowconfigure(0, weight=1)
+        body.rowconfigure(0, weight=0)
 
         sidebar = tk.Frame(body, bg=BG)
-        sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        sidebar.grid(row=0, column=0, sticky="new", padx=(0, 16))
         sidebar.columnconfigure(0, weight=1)
         sidebar.rowconfigure(0, weight=0)
         sidebar.rowconfigure(1, weight=0)
-        sidebar.rowconfigure(2, weight=1)
+        sidebar.rowconfigure(2, weight=0)
 
         details_panel, details_content = self._create_panel(
             sidebar,
@@ -1020,25 +1191,33 @@ class BotManagerApp:
             actions_content.columnconfigure(column, weight=1)
 
         buttons = [
-            ("Setup", self._setup_environment, False),
-            ("Start", self._start_bot, True),
-            ("Stop", self._stop_bot, False),
-            ("Restart", self._restart_bot, False),
-            ("Check Now", self._check_now, True),
-            ("Restart App", self._restart_app, False),
-            ("Test Debug", self._test_debug, False),
-            ("Test Release", self._test_latest_release, False),
-            ("Refresh", self._manual_refresh, False),
+            ("Setup", self._setup_environment, False, "setup"),
+            ("Start Bot", self._toggle_bot_running, True, "start_stop"),
+            ("Restart Bot", self._restart_bot, False, "restart_bot"),
+            ("Check Now", self._check_now, True, None),
+            ("Restart App", self._restart_app, False, None),
+            ("Test Debug", self._test_debug, False, None),
+            ("Test Release", self._test_latest_release, False, None),
+            ("Validate Config", self._validate_config, False, None),
+            ("Refresh Data", self._manual_refresh, False, "refresh_data"),
         ]
-        for index, (label, command, accent) in enumerate(buttons):
+        for index, (label, command, accent, button_key) in enumerate(buttons):
             row = index // 2
             column = index % 2
-            self._create_button(
+            button = self._create_button(
                 actions_content,
                 text=label,
                 command=command,
                 accent=accent,
-            ).grid(row=row, column=column, sticky="ew", padx=(0, 8 if column == 0 else 0), pady=(0, 8))
+            )
+            button.grid(row=row, column=column, sticky="ew", padx=(0, 8 if column == 0 else 0), pady=(0, 8))
+            if button_key == "setup":
+                self.setup_button = button
+                self._add_tooltip(button, "Creates the local Python environment and copies .env.example to .env when .env is missing.")
+            elif button_key == "start_stop":
+                self.start_stop_button = button
+            elif button_key == "refresh_data":
+                self._add_tooltip(button, "Reloads status, logs, and CurseForge release data in the manager UI.")
 
         workspace_panel, workspace_content = self._create_panel(
             body,
@@ -1046,17 +1225,15 @@ class BotManagerApp:
             subtitle="Logs, releases, settings, and statistics",
             bg=PANEL,
         )
-        workspace_panel.grid(row=0, column=1, sticky="nsew")
+        workspace_panel.grid(row=0, column=1, sticky="new")
         workspace_content.columnconfigure(0, weight=1)
-        workspace_content.rowconfigure(1, weight=1)
 
         tab_bar = tk.Frame(workspace_content, bg=PANEL)
         tab_bar.grid(row=0, column=0, sticky="w", pady=(0, 10))
 
         tab_container = tk.Frame(workspace_content, bg=PANEL, bd=0, highlightthickness=0)
-        tab_container.grid(row=1, column=0, sticky="nsew")
+        tab_container.grid(row=1, column=0, sticky="ew")
         tab_container.columnconfigure(0, weight=1)
-        tab_container.rowconfigure(0, weight=1)
 
         logs_tab = tk.Frame(tab_container, bg=PANEL)
         actions_tab = tk.Frame(tab_container, bg=PANEL)
@@ -1071,7 +1248,7 @@ class BotManagerApp:
             "Stats": stats_tab,
         }
         for frame in self.tab_frames.values():
-            frame.grid(row=0, column=0, sticky="nsew")
+            frame.grid(row=0, column=0, sticky="ew")
 
         for index, tab_name in enumerate(["Logs", "Activity", "Releases", "Settings", "Stats"]):
             button = self._create_button(tab_bar, text=tab_name, command=lambda name=tab_name: self._show_tab(name))
@@ -1079,15 +1256,15 @@ class BotManagerApp:
             self.tab_buttons[tab_name] = button
 
         logs_tab.columnconfigure(0, weight=1)
-        logs_tab.rowconfigure(0, weight=1)
+        logs_tab.rowconfigure(0, weight=0)
         actions_tab.columnconfigure(0, weight=1)
-        actions_tab.rowconfigure(0, weight=1)
+        actions_tab.rowconfigure(0, weight=0)
         releases_tab.columnconfigure(0, weight=1)
-        releases_tab.rowconfigure(0, weight=1)
+        releases_tab.rowconfigure(0, weight=0)
         settings_tab.columnconfigure(0, weight=1)
-        settings_tab.rowconfigure(0, weight=1)
+        settings_tab.rowconfigure(0, weight=0)
         stats_tab.columnconfigure(0, weight=1)
-        stats_tab.rowconfigure(0, weight=1)
+        stats_tab.rowconfigure(0, weight=0)
 
         logs_panel, logs_content = self._create_panel(
             logs_tab,
@@ -1095,16 +1272,27 @@ class BotManagerApp:
             subtitle="Live application output from the running bot",
             bg=CONTROL_ALT,
         )
-        logs_panel.grid(row=0, column=0, sticky="nsew")
+        logs_panel.grid(row=0, column=0, sticky="ew")
         logs_content.columnconfigure(0, weight=1)
-        logs_content.rowconfigure(1, weight=1)
         logs_toolbar = tk.Frame(logs_content, bg=PANEL)
         logs_toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         ttk.Checkbutton(logs_toolbar, text="Follow logs", variable=self.follow_logs).pack(side="left")
         self._create_button(logs_toolbar, text="Clear view", command=self._clear_log_view).pack(side="left", padx=(10, 0))
+        ttk.Label(logs_toolbar, text="Level", style="Panel.TLabel").pack(side="left", padx=(16, 6))
+        self.log_level_combo = ttk.Combobox(
+            logs_toolbar,
+            textvariable=self.log_level_filter,
+            values=("All", "ERROR", "WARNING", "INFO", "DEBUG"),
+            state="readonly",
+            width=10,
+        )
+        self.log_level_combo.pack(side="left")
+        ttk.Label(logs_toolbar, text="Search", style="Panel.TLabel").pack(side="left", padx=(16, 6))
+        self._create_entry(logs_toolbar, textvariable=self.log_filter_text, width=28).pack(side="left")
 
         self.logs_view = ScrolledText(logs_content, wrap="word", font=("Consolas", 10))
-        self.logs_view.grid(row=1, column=0, sticky="nsew")
+        self.logs_view.configure(height=24)
+        self.logs_view.grid(row=1, column=0, sticky="ew")
         self._style_text_widget(self.logs_view)
         self.logs_view.configure(state="disabled")
 
@@ -1114,11 +1302,11 @@ class BotManagerApp:
             subtitle="Command output and background task results",
             bg=CONTROL_ALT,
         )
-        activity_panel.grid(row=0, column=0, sticky="nsew")
+        activity_panel.grid(row=0, column=0, sticky="ew")
         activity_content.columnconfigure(0, weight=1)
-        activity_content.rowconfigure(0, weight=1)
         self.output_view = ScrolledText(activity_content, wrap="word", font=("Consolas", 10))
-        self.output_view.grid(row=0, column=0, sticky="nsew")
+        self.output_view.configure(height=24)
+        self.output_view.grid(row=0, column=0, sticky="ew")
         self._style_text_widget(self.output_view)
         self.output_view.configure(state="disabled")
 
@@ -1128,13 +1316,13 @@ class BotManagerApp:
             subtitle="Track mods, manage stored versions, and resend notifications",
             bg=CONTROL_ALT,
         )
-        releases_panel.grid(row=0, column=0, sticky="nsew")
+        releases_panel.grid(row=0, column=0, sticky="ew")
         releases_content.columnconfigure(0, weight=1)
-        releases_content.rowconfigure(2, weight=1)
 
         releases_actions = tk.Frame(releases_content, bg=CONTROL_ALT)
         releases_actions.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self._create_button(releases_actions, text="Refresh Releases", command=self._refresh_releases).pack(side="left")
+        self._create_button(releases_actions, text="Preview Release", command=self._preview_selected_release).pack(side="left", padx=(8, 0))
         self._create_button(releases_actions, text="Send Latest To Release", command=self._send_selected_release).pack(side="left", padx=(8, 0))
         self._create_button(releases_actions, text="Send Latest To Debug", command=self._send_selected_release_to_debug).pack(side="left", padx=(8, 0))
 
@@ -1144,27 +1332,40 @@ class BotManagerApp:
         mod_editor.columnconfigure(2, weight=0)
         mod_editor.columnconfigure(3, weight=0)
         ttk.Label(mod_editor, text="New MOD_ID", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
-        self._create_entry(mod_editor, textvariable=self.new_mod_id, width=18).grid(row=0, column=1, sticky="ew", padx=(8, 12))
+        self._create_entry(mod_editor, textvariable=self.new_mod_id, width=18, on_return=self._add_mod).grid(row=0, column=1, sticky="ew", padx=(8, 12))
         self._create_button(mod_editor, text="Add by ID", command=self._add_mod, accent=True).grid(row=0, column=2, sticky="ew")
-        self._create_button(mod_editor, text="Remove Selected Mod", command=self._remove_selected_mod).grid(row=0, column=3, sticky="ew", padx=(8, 0))
-        ttk.Label(mod_editor, text="Search by name", style="Panel.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        self._create_entry(mod_editor, textvariable=self.mod_search_text, width=28).grid(row=1, column=1, sticky="ew", padx=(8, 12), pady=(8, 0))
-        self._create_button(mod_editor, text="Search", command=self._search_mods).grid(row=1, column=2, sticky="ew", pady=(8, 0))
+        self._create_button(mod_editor, text="Search by Name", command=self._search_mods).grid(row=0, column=3, sticky="ew", padx=(8, 0))
+
+        filters = tk.Frame(releases_content, bg=CONTROL_ALT)
+        filters.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        filters.columnconfigure(1, weight=1)
+        ttk.Label(filters, text="Filter", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
+        self._create_entry(filters, textvariable=self.mod_filter_text, width=32).grid(row=0, column=1, sticky="ew", padx=(8, 12))
+        ttk.Label(filters, text="Game", style="Panel.TLabel").grid(row=0, column=2, sticky="w")
+        self.mod_filter_game_combo = ttk.Combobox(
+            filters,
+            textvariable=self.mod_filter_game,
+            values=("All games",),
+            state="readonly",
+            width=24,
+        )
+        self.mod_filter_game_combo.grid(row=0, column=3, sticky="ew", padx=(8, 12))
+        ttk.Checkbutton(filters, text="Following only", variable=self.mod_filter_following_only).grid(row=0, column=4, sticky="w", padx=(0, 10))
+        ttk.Checkbutton(filters, text="Missing versions", variable=self.mod_filter_missing_versions_only).grid(row=0, column=5, sticky="w")
 
         tracked_outer, tracked_mods_pane = self._create_surface(releases_content, bg=PANEL_ALT, padding=18)
-        tracked_outer.grid(row=2, column=0, sticky="nsew")
+        tracked_outer.grid(row=3, column=0, sticky="ew")
         tracked_mods_pane.columnconfigure(0, weight=1)
         tracked_mods_pane.columnconfigure(1, weight=0)
-        tracked_mods_pane.rowconfigure(1, weight=1)
 
         tk.Label(tracked_mods_pane, text="Tracked mods", bg=PANEL_ALT, fg=TEXT, font=("Segoe UI Semibold", 18)).grid(row=0, column=0, sticky="nw")
         self.mods_tree = ttk.Treeview(
             tracked_mods_pane,
             columns=tuple(MOD_COLUMN_LABELS),
             show="headings",
-            height=8,
+            height=6,
         )
-        self.mods_tree.grid(row=1, column=0, sticky="nsew", pady=(8, 8))
+        self.mods_tree.grid(row=1, column=0, sticky="ew", pady=(8, 8))
         for column in MOD_COLUMN_LABELS:
             self.mods_tree.heading(column, text=MOD_COLUMN_LABELS[column], command=lambda current=column: self._sort_mods_by(current))
             self.mods_tree.column(
@@ -1212,6 +1413,8 @@ class BotManagerApp:
         self.mod_context_menu.add_command(label="Open CurseForge Page", command=self._open_selected_public_page)
         self.mod_context_menu.add_command(label="Open Author Files", command=self._open_selected_author_files_page)
         self.mod_context_menu.add_command(label="Open Comments", command=self._open_selected_comments_page)
+        self.mod_context_menu.add_separator()
+        self.mod_context_menu.add_command(label="Remove Mod From Tracking", command=self._remove_selected_mod)
         self._apply_mod_columns()
 
         settings_panel, settings_content = self._create_panel(
@@ -1220,41 +1423,102 @@ class BotManagerApp:
             subtitle="Edit the most important runtime values stored in the environment file",
             bg=CONTROL_ALT,
         )
-        settings_panel.grid(row=0, column=0, sticky="nsew")
+        settings_panel.grid(row=0, column=0, sticky="ew")
         settings_content.columnconfigure(1, weight=1)
-        ttk.Label(settings_content, text="Message Tag", style="Panel.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 8))
-        self._create_entry(settings_content, textvariable=self.setting_message_tag, sensitive=True).grid(row=0, column=1, sticky="ew", pady=(0, 8))
-        ttk.Label(settings_content, text="Debug Channel ID", style="Panel.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 8))
-        self._create_entry(settings_content, textvariable=self.setting_debug_channel_id, sensitive=True).grid(row=1, column=1, sticky="ew", pady=(0, 8))
-        ttk.Label(settings_content, text="Check Interval (minutes)", style="Panel.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 8))
-        self._create_entry(settings_content, textvariable=self.setting_check_interval_minutes).grid(row=2, column=1, sticky="ew", pady=(0, 8))
-        ttk.Checkbutton(settings_content, text="Publish announcement messages", variable=self.setting_announce_messages).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 6))
-        ttk.Checkbutton(settings_content, text="Add reactions", variable=self.setting_add_reactions).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 12))
-        ttk.Checkbutton(
+        message_tag_label = ttk.Label(settings_content, text="Message Tag", style="Panel.TLabel")
+        message_tag_label.grid(row=0, column=0, sticky="w", pady=(0, 8))
+        message_tag_entry = self._create_entry(settings_content, textvariable=self.setting_message_tag, sensitive=True)
+        message_tag_entry.grid(row=0, column=1, sticky="ew", pady=(0, 8))
+        self._add_tooltip(message_tag_label, "Mention sent with release messages when no per-game or per-mod tag override exists. Numeric role IDs are saved as Discord role mentions.")
+        debug_channel_label = ttk.Label(settings_content, text="Debug Channel ID", style="Panel.TLabel")
+        debug_channel_label.grid(row=1, column=0, sticky="w", pady=(0, 8))
+        debug_channel_entry = self._create_entry(settings_content, textvariable=self.setting_debug_channel_id, sensitive=True)
+        debug_channel_entry.grid(row=1, column=1, sticky="ew", pady=(0, 8))
+        self._add_tooltip(debug_channel_label, "Discord channel used for debug tests, startup messages, and safe release test sends.")
+        interval_label = ttk.Label(settings_content, text="Check Interval (minutes)", style="Panel.TLabel")
+        interval_label.grid(row=2, column=0, sticky="w", pady=(0, 8))
+        interval_entry = self._create_entry(settings_content, textvariable=self.setting_check_interval_minutes)
+        interval_entry.grid(row=2, column=1, sticky="ew", pady=(0, 8))
+        self._add_tooltip(interval_label, "How often the running bot checks CurseForge for new files.")
+        header_label = ttk.Label(settings_content, text="Message Header", style="Panel.TLabel")
+        header_label.grid(row=3, column=0, sticky="w", pady=(0, 8))
+        header_entry = self._create_entry(settings_content, textvariable=self.setting_message_header)
+        header_entry.grid(row=3, column=1, sticky="ew", pady=(0, 8))
+        self._add_tooltip(header_label, "Discord embed description. Supports {mod_name} and {version}. Leave empty for the default text.")
+        footer_label = ttk.Label(settings_content, text="Message Footer", style="Panel.TLabel")
+        footer_label.grid(row=4, column=0, sticky="w", pady=(0, 8))
+        footer_entry = self._create_entry(settings_content, textvariable=self.setting_message_footer)
+        footer_entry.grid(row=4, column=1, sticky="ew", pady=(0, 8))
+        self._add_tooltip(footer_label, "Name of the embed field containing download and changelog links. Supports {mod_name} and {version}.")
+        logo_style_label = ttk.Label(settings_content, text="Logo Style", style="Panel.TLabel")
+        logo_style_label.grid(row=5, column=0, sticky="w", pady=(0, 8))
+        logo_style_combo = ttk.Combobox(
+            settings_content,
+            textvariable=self.setting_logo_style,
+            values=("thumbnail", "fullwidth"),
+            state="readonly",
+        )
+        logo_style_combo.grid(row=5, column=1, sticky="w", pady=(0, 8))
+        self._add_tooltip(logo_style_label, "thumbnail shows the mod logo beside the embed; fullwidth shows it as the main embed image.")
+        log_level_label = ttk.Label(settings_content, text="Log Level", style="Panel.TLabel")
+        log_level_label.grid(row=6, column=0, sticky="w", pady=(0, 8))
+        log_level_combo = ttk.Combobox(
+            settings_content,
+            textvariable=self.setting_log_level,
+            values=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"),
+            state="readonly",
+        )
+        log_level_combo.grid(row=6, column=1, sticky="w", pady=(0, 8))
+        self._add_tooltip(log_level_label, "Minimum verbosity written to the bot log. DEBUG is useful while troubleshooting API or Discord issues.")
+        publish_check = ttk.Checkbutton(settings_content, text="Publish announcement messages", variable=self.setting_announce_messages)
+        publish_check.grid(row=7, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self._add_tooltip(publish_check, "Publishes release messages in Discord announcement/news channels when Discord allows it.")
+        reactions_check = ttk.Checkbutton(settings_content, text="Add reactions", variable=self.setting_add_reactions)
+        reactions_check.grid(row=8, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self._add_tooltip(reactions_check, "Adds the default reaction to release messages after sending them.")
+        show_logo_check = ttk.Checkbutton(settings_content, text="Show logo in Discord embed", variable=self.setting_show_logo)
+        show_logo_check.grid(row=9, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self._add_tooltip(show_logo_check, "Includes the CurseForge project logo in release embeds when CurseForge provides one.")
+        intent_check = ttk.Checkbutton(settings_content, text="Enable legacy !commands", variable=self.setting_message_content_intent)
+        intent_check.grid(row=10, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        self._add_tooltip(intent_check, "Allows old-style Discord text commands like !force_check. Leave off unless you use those commands and enabled Message Content Intent in the Discord developer portal.")
+        screenshot_check = ttk.Checkbutton(
             settings_content,
             text="Safe screenshot mode (hide Discord IDs and mention tags)",
             variable=self.safe_screenshot_mode,
             command=self._toggle_safe_screenshot_mode,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        )
+        screenshot_check.grid(row=11, column=0, columnspan=2, sticky="w", pady=(0, 12))
+        self._add_tooltip(screenshot_check, "Masks Discord IDs and role tags in the manager UI only. It does not change .env.")
         tk.Label(
             settings_content,
             text="Per-game defaults",
             bg=CONTROL_ALT,
             fg=TEXT,
             font=("Segoe UI Semibold", 16),
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(22, 10))
+        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(22, 10))
         self.game_defaults_frame = tk.Frame(settings_content, bg=CONTROL_ALT)
-        self.game_defaults_frame.grid(row=7, column=0, columnspan=2, sticky="ew")
+        self.game_defaults_frame.grid(row=13, column=0, columnspan=2, sticky="ew")
         self.game_defaults_frame.columnconfigure(1, weight=1)
         self.game_defaults_frame.columnconfigure(2, weight=1)
-        self._create_button(settings_content, text="Save Settings", command=self._save_settings, accent=True).grid(row=8, column=0, sticky="w", pady=(16, 0))
+        settings_buttons = tk.Frame(settings_content, bg=CONTROL_ALT)
+        settings_buttons.grid(row=14, column=0, columnspan=2, sticky="w", pady=(16, 0))
+        self._create_button(settings_buttons, text="Save Settings", command=self._save_settings, accent=True).pack(side="left")
+        self._create_button(settings_buttons, text="Save & Restart", command=self._save_settings_and_restart, accent=True).pack(side="left", padx=(8, 0))
+        self._create_button(settings_buttons, text="Restore Last Backup", command=self._restore_env_backup).pack(side="left", padx=(8, 0))
+        reset_button = self._create_button(settings_buttons, text="Reset Tool", command=self._reset_tool_state)
+        reset_button.pack(side="left", padx=(8, 0))
+        self._add_tooltip(
+            reset_button,
+            "Stops the bot, backs up .env, restores .env.example, and clears logs, stored releases, PID, and saved window/UI state. The Python environment is kept.",
+        )
         tk.Label(
             settings_content,
-            text="Restart the bot after saving settings to apply them.",
+            text="Settings writes create a .env backup before saving.",
             bg=CONTROL_ALT,
             fg=MUTED,
             font=("Segoe UI", 10),
-        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ).grid(row=15, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         stats_panel, stats_content = self._create_panel(
             stats_tab,
@@ -1262,9 +1526,8 @@ class BotManagerApp:
             subtitle="Track total downloads, likes, and quick access to mod pages",
             bg=CONTROL_ALT,
         )
-        stats_panel.grid(row=0, column=0, sticky="nsew")
+        stats_panel.grid(row=0, column=0, sticky="ew")
         stats_content.columnconfigure(0, weight=1)
-        stats_content.rowconfigure(2, weight=1)
         stats_actions = tk.Frame(stats_content, bg=CONTROL_ALT)
         stats_actions.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         self._create_button(stats_actions, text="Refresh Stats", command=self._refresh_releases).pack(side="left")
@@ -1276,9 +1539,9 @@ class BotManagerApp:
             stats_content,
             columns=tuple(STATS_COLUMN_LABELS),
             show="headings",
-            height=10,
+            height=6,
         )
-        self.stats_tree.grid(row=2, column=0, sticky="nsew")
+        self.stats_tree.grid(row=2, column=0, sticky="ew")
         for column in STATS_COLUMN_LABELS:
             self.stats_tree.heading(column, text=STATS_COLUMN_LABELS[column], command=lambda current=column: self._sort_stats_by(current))
             self.stats_tree.column(
@@ -1291,6 +1554,12 @@ class BotManagerApp:
         self._update_mod_heading_labels()
         self._update_stats_heading_labels()
         self._update_version_heading_labels()
+        self.mod_filter_text.trace_add("write", self._on_mod_filters_changed)
+        self.mod_filter_game.trace_add("write", self._on_mod_filters_changed)
+        self.mod_filter_following_only.trace_add("write", self._on_mod_filters_changed)
+        self.mod_filter_missing_versions_only.trace_add("write", self._on_mod_filters_changed)
+        self.log_filter_text.trace_add("write", self._on_log_filters_changed)
+        self.log_level_filter.trace_add("write", self._on_log_filters_changed)
         self._show_tab(self.selected_tab)
 
     def _apply_initial_pane_layouts(self) -> None:
@@ -1327,12 +1596,15 @@ class BotManagerApp:
     def _apply_release_summaries(self, summaries: list[manager_service.ModReleaseSummary]) -> None:
         previous_mod = self._selected_mod_id()
         self.release_summaries = self._sorted_release_summaries(summaries)
+        display_summaries = self._filtered_release_summaries(self.release_summaries)
+        self._refresh_mod_filter_games()
+        self._refresh_mod_search_games()
         self._apply_mod_columns()
 
         for item in self.mods_tree.get_children():
             self.mods_tree.delete(item)
 
-        for summary in self.release_summaries:
+        for summary in display_summaries:
             self.mods_tree.insert(
                 "",
                 tk.END,
@@ -1357,14 +1629,64 @@ class BotManagerApp:
                 ),
             )
 
-        if previous_mod and any(summary.mod_id == previous_mod for summary in self.release_summaries):
+        if previous_mod and any(summary.mod_id == previous_mod for summary in display_summaries):
             self.mods_tree.selection_set(f"mod:{previous_mod}")
-        elif self.release_summaries:
-            self.mods_tree.selection_set(f"mod:{self.release_summaries[0].mod_id}")
+        elif display_summaries:
+            self.mods_tree.selection_set(f"mod:{display_summaries[0].mod_id}")
 
         self._render_game_defaults()
         self._refresh_stats_view()
-        self._set_notice(f"Loaded {len(self.release_summaries)} tracked mods.")
+        if len(display_summaries) == len(self.release_summaries):
+            self._set_notice(f"Loaded {len(self.release_summaries)} tracked mods.")
+        else:
+            self._set_notice(f"Showing {len(display_summaries)} of {len(self.release_summaries)} tracked mods.")
+        self.mods_tree.configure(height=max(4, min(12, len(display_summaries) + 2)))
+        self.root.after_idle(self._refresh_app_scrollregion)
+
+    def _refresh_mod_filter_games(self) -> None:
+        game_names = sorted({summary.game_name for summary in self.release_summaries if summary.game_name})
+        values = ["All games"] + game_names
+        if hasattr(self, "mod_filter_game_combo"):
+            self.mod_filter_game_combo.configure(values=tuple(values))
+        if self.mod_filter_game.get() not in values:
+            self.mod_filter_game.set("All games")
+
+    def _filtered_release_summaries(
+        self,
+        summaries: list[manager_service.ModReleaseSummary],
+    ) -> list[manager_service.ModReleaseSummary]:
+        query = self.mod_filter_text.get().strip().lower()
+        selected_game = self.mod_filter_game.get()
+        following_only = self.mod_filter_following_only.get()
+        missing_versions_only = self.mod_filter_missing_versions_only.get()
+        filtered: list[manager_service.ModReleaseSummary] = []
+
+        for summary in summaries:
+            if query:
+                haystack = " ".join(
+                    [
+                        summary.mod_name,
+                        summary.author_name,
+                        summary.game_name,
+                        summary.mod_id,
+                        summary.latest_version,
+                    ]
+                ).lower()
+                if query not in haystack:
+                    continue
+            if selected_game != "All games" and summary.game_name != selected_game:
+                continue
+            if following_only and not summary.following:
+                continue
+            if missing_versions_only and summary.versions:
+                continue
+            filtered.append(summary)
+        return filtered
+
+    def _on_mod_filters_changed(self, *_args) -> None:
+        if not hasattr(self, "mods_tree"):
+            return
+        self._apply_release_summaries(self.release_summaries)
 
     def _refresh_stats_view(self) -> None:
         tracked_mod_count = len(self.release_summaries)
@@ -1394,6 +1716,8 @@ class BotManagerApp:
                     "Open comments",
                 ),
             )
+        self.stats_tree.configure(height=max(4, min(12, len(self.release_summaries) + 2)))
+        self.root.after_idle(self._refresh_app_scrollregion)
 
     def _on_mod_selected(self, _event=None) -> None:
         return
@@ -1458,27 +1782,32 @@ class BotManagerApp:
             game_id: var for game_id, var in self.game_message_tag_vars.items() if game_id in active_game_ids
         }
 
-        tk.Label(
+        game_header = tk.Label(
             self.game_defaults_frame,
             text="Game",
             bg=CONTROL_ALT,
             fg=MUTED,
             font=("Segoe UI Semibold", 10),
-        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
-        tk.Label(
+        )
+        game_header.grid(row=0, column=0, sticky="w", pady=(0, 8))
+        channel_header = tk.Label(
             self.game_defaults_frame,
             text="Release Channel ID",
             bg=CONTROL_ALT,
             fg=MUTED,
             font=("Segoe UI Semibold", 10),
-        ).grid(row=0, column=1, sticky="w", padx=(8, 18), pady=(0, 8))
-        tk.Label(
+        )
+        channel_header.grid(row=0, column=1, sticky="w", padx=(8, 18), pady=(0, 8))
+        tag_header = tk.Label(
             self.game_defaults_frame,
             text="Message Tag",
             bg=CONTROL_ALT,
             fg=MUTED,
             font=("Segoe UI Semibold", 10),
-        ).grid(row=0, column=2, sticky="w", padx=(0, 8), pady=(0, 8))
+        )
+        tag_header.grid(row=0, column=2, sticky="w", padx=(0, 8), pady=(0, 8))
+        self._add_tooltip(channel_header, "Default Discord release channel for every tracked mod in this game unless a mod-specific override exists.")
+        self._add_tooltip(tag_header, "Default mention tag for every tracked mod in this game unless a mod-specific override exists.")
 
         for row, (game_id, game_name) in enumerate(sorted(unique_games.items(), key=lambda item: item[1].lower()), start=1):
             tk.Label(
@@ -2133,6 +2462,273 @@ class BotManagerApp:
     def _open_author_dashboard(self) -> None:
         os.startfile(AUTHOR_DASHBOARD_URL)
 
+    def _format_release_preview_template(self, template: str, fallback: str, mod_name: str, version: str) -> str:
+        value = template.strip() or fallback
+        try:
+            return value.format(mod_name=mod_name, version=version)
+        except (KeyError, IndexError, ValueError):
+            return value
+
+    def _discord_preview_label(
+        self,
+        parent: tk.Misc,
+        *,
+        text: str,
+        row: int,
+        column: int = 0,
+        color: str = DISCORD_TEXT,
+        font: tuple[str, int, str] | tuple[str, int] = ("Segoe UI", 10),
+        wraplength: int = 520,
+        pady: tuple[int, int] = (0, 0),
+        sticky: str = "w",
+    ) -> tk.Label:
+        label = tk.Label(
+            parent,
+            text=text,
+            bg=DISCORD_EMBED,
+            fg=color,
+            font=font,
+            justify="left",
+            wraplength=wraplength,
+        )
+        label.grid(row=row, column=column, sticky=sticky, pady=pady)
+        return label
+
+    def _discord_preview_mention_text(self, message_tag: str) -> str:
+        if not message_tag:
+            return ""
+        if self.safe_screenshot_mode.get():
+            return "@mention"
+
+        stripped_tag = message_tag.strip()
+        if stripped_tag.isdigit():
+            return f"@role {stripped_tag}"
+
+        mention_labels: list[str] = []
+        for match in re.finditer(r"<(@[!&]?|#)(\d+)>", message_tag):
+            mention_type, mention_id = match.groups()
+            if mention_type == "@&":
+                mention_labels.append(f"@role {mention_id}")
+            elif mention_type in {"@", "@!"}:
+                mention_labels.append(f"@user {mention_id}")
+            else:
+                mention_labels.append(f"#channel {mention_id}")
+
+        lowered = message_tag.lower()
+        if "@everyone" in lowered:
+            mention_labels.append("@everyone")
+        if "@here" in lowered:
+            mention_labels.append("@here")
+
+        return "  ".join(mention_labels) if mention_labels else message_tag
+
+    def _draw_discord_mention(self, parent: tk.Misc, text: str) -> None:
+        if not text:
+            return
+        wrapper = tk.Frame(parent, bg=DISCORD_BG)
+        wrapper.grid(row=0, column=0, sticky="w", pady=(0, 10))
+        for chunk in text.split("  "):
+            tk.Label(
+                wrapper,
+                text=chunk,
+                bg="#3C4270",
+                fg="#DEE0FC",
+                font=("Segoe UI Semibold", 10),
+                padx=5,
+                pady=2,
+            ).pack(side="left", padx=(0, 6))
+
+    def _preview_selected_release(self) -> None:
+        summary = self._selected_summary()
+        mod_name = summary.mod_name if summary is not None else "Example Mod"
+        version = summary.latest_version if summary is not None and summary.latest_version != "-" else "1.0.0"
+        title = f"{mod_name} v{version}"
+        description = self._format_release_preview_template(
+            self.setting_message_header.get(),
+            "New version available on CurseForge.",
+            mod_name,
+            version,
+        )
+        links_label = self._format_release_preview_template(
+            self.setting_message_footer.get(),
+            "Links",
+            mod_name,
+            version,
+        )
+
+        window = tk.Toplevel(self.root)
+        window.title(f"Release preview - {mod_name}")
+        window.configure(bg=BG)
+        window.transient(self.root)
+        window.geometry("820x680")
+        window.minsize(700, 560)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+
+        outer, content = self._create_panel(
+            window,
+            title="Discord preview",
+            subtitle=mod_name if summary is not None else "Example message using current settings",
+            bg=CONTROL_ALT,
+        )
+        outer.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
+        content.columnconfigure(0, weight=1)
+        content.rowconfigure(0, weight=1)
+
+        message_tag = summary.message_tag if summary is not None else self.setting_message_tag.get()
+        release_channel = summary.release_channel_id if summary is not None else ""
+        channel_override = summary.release_channel_override if summary is not None else ""
+        tag_override = summary.message_tag_override if summary is not None else ""
+        changes_text = "Example changelog text. The live message uses the latest CurseForge changelog."
+        if summary is not None:
+            changes_text = "Latest CurseForge changelog is fetched at send time and shown here as the Changes field."
+
+        discord_frame = tk.Frame(content, bg=DISCORD_BG, padx=18, pady=16)
+        discord_frame.grid(row=0, column=0, sticky="nsew")
+        discord_frame.columnconfigure(0, weight=1)
+
+        tag_text = self._discord_preview_mention_text(message_tag)
+        self._draw_discord_mention(discord_frame, tag_text)
+
+        message_row = tk.Frame(discord_frame, bg=DISCORD_BG)
+        message_row.grid(row=1, column=0, sticky="ew")
+        message_row.columnconfigure(1, weight=1)
+
+        avatar = tk.Canvas(message_row, width=40, height=40, bg=DISCORD_BG, bd=0, highlightthickness=0)
+        avatar.grid(row=0, column=0, sticky="n", padx=(0, 12))
+        avatar.create_oval(2, 2, 38, 38, fill="#5865F2", outline="")
+        avatar.create_text(20, 20, text="CF", fill="#FFFFFF", font=("Segoe UI Semibold", 10))
+
+        message_body = tk.Frame(message_row, bg=DISCORD_BG)
+        message_body.grid(row=0, column=1, sticky="ew")
+        message_body.columnconfigure(0, weight=1)
+
+        header = tk.Frame(message_body, bg=DISCORD_BG)
+        header.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        tk.Label(header, text="CurseForge Bot", bg=DISCORD_BG, fg=DISCORD_TEXT, font=("Segoe UI Semibold", 10)).pack(side="left")
+        tk.Label(header, text=" APP ", bg="#5865F2", fg="#FFFFFF", font=("Segoe UI Semibold", 7)).pack(side="left", padx=(6, 8))
+        tk.Label(header, text="Today at 12:00", bg=DISCORD_BG, fg=DISCORD_MUTED, font=("Segoe UI", 9)).pack(side="left")
+
+        embed_shell = tk.Frame(message_body, bg=DISCORD_GREEN, width=4)
+        embed_shell.grid(row=1, column=0, sticky="ew")
+        embed_shell.columnconfigure(1, weight=1)
+        tk.Frame(embed_shell, bg=DISCORD_GREEN, width=4).grid(row=0, column=0, sticky="ns")
+        embed = tk.Frame(embed_shell, bg=DISCORD_EMBED, padx=14, pady=12)
+        embed.grid(row=0, column=1, sticky="ew")
+        embed.columnconfigure(0, weight=1)
+
+        text_column = tk.Frame(embed, bg=DISCORD_EMBED)
+        text_column.grid(row=0, column=0, sticky="new", padx=(0, 12))
+        text_column.columnconfigure(0, weight=1)
+        self._discord_preview_label(
+            text_column,
+            text=title,
+            row=0,
+            color=DISCORD_LINK,
+            font=("Segoe UI Semibold", 12),
+            pady=(0, 8),
+        )
+        self._discord_preview_label(text_column, text=description, row=1, wraplength=500, pady=(0, 14))
+        self._discord_preview_label(
+            text_column,
+            text="Changes",
+            row=2,
+            color=DISCORD_TEXT,
+            font=("Segoe UI Semibold", 10),
+            pady=(0, 4),
+        )
+        self._discord_preview_label(text_column, text=changes_text, row=3, wraplength=500, pady=(0, 12))
+        self._discord_preview_label(
+            text_column,
+            text=links_label,
+            row=4,
+            color=DISCORD_TEXT,
+            font=("Segoe UI Semibold", 10),
+            pady=(0, 4),
+        )
+        self._discord_preview_label(
+            text_column,
+            text="Download | View changelog",
+            row=5,
+            color=DISCORD_LINK,
+            wraplength=500,
+        )
+
+        if self.setting_show_logo.get():
+            if self.setting_logo_style.get().strip().lower() == "fullwidth":
+                logo_box = tk.Canvas(text_column, height=112, bg=DISCORD_EMBED, bd=0, highlightthickness=0)
+                logo_box.grid(row=6, column=0, sticky="ew", pady=(14, 0))
+                logo_box.create_rectangle(0, 0, 520, 112, fill="#202225", outline="#404249")
+                logo_box.create_text(260, 56, text="Mod logo image", fill=DISCORD_MUTED, font=("Segoe UI", 10))
+            else:
+                thumb = tk.Canvas(embed, width=92, height=92, bg=DISCORD_EMBED, bd=0, highlightthickness=0)
+                thumb.grid(row=0, column=1, sticky="ne")
+                thumb.create_rectangle(2, 2, 90, 90, fill="#202225", outline="#404249")
+                thumb.create_text(46, 46, text="Logo", fill=DISCORD_MUTED, font=("Segoe UI", 10))
+
+        if self.setting_add_reactions.get():
+            reactions = tk.Frame(message_body, bg=DISCORD_BG)
+            reactions.grid(row=2, column=0, sticky="w", pady=(8, 0))
+            tk.Label(
+                reactions,
+                text=f"{DEFAULT_REACTION_PREVIEW} 1",
+                bg="#3B3D44",
+                fg=DISCORD_TEXT,
+                font=("Segoe UI", 10),
+                padx=8,
+                pady=4,
+            ).pack(side="left")
+
+        details = tk.Frame(content, bg=CONTROL_ALT)
+        details.grid(row=1, column=0, sticky="ew", pady=(14, 0))
+        details.columnconfigure(1, weight=1)
+        detail_rows: list[tuple[str, str]] = []
+        if summary is not None:
+            detail_rows.extend(
+                [
+                    ("MOD_ID", summary.mod_id),
+                    ("Game", summary.game_name),
+                    ("Stored latest", summary.latest_version),
+                    ("Stored at", summary.latest_date),
+                    ("Release channel", self._sensitive_display(release_channel)),
+                    ("Channel override", self._sensitive_display(channel_override)),
+                    ("Tag override", self._sensitive_display(tag_override)),
+                ]
+            )
+        else:
+            detail_rows.extend(
+                [
+                    ("Message tag", self._sensitive_display(message_tag) or "-"),
+                    ("Release channel", "Select a tracked mod to preview its real release channel."),
+                    ("Logo", "Shown" if self.setting_show_logo.get() else "Hidden"),
+                ]
+            )
+        for row, (label, value) in enumerate(detail_rows):
+            tk.Label(details, text=label, bg=CONTROL_ALT, fg=MUTED, font=("Segoe UI Semibold", 9)).grid(
+                row=row,
+                column=0,
+                sticky="nw",
+                pady=(0, 5),
+                padx=(0, 12),
+            )
+            tk.Label(details, text=value or "-", bg=CONTROL_ALT, fg=TEXT, font=("Segoe UI", 9), wraplength=560, justify="left").grid(
+                row=row,
+                column=1,
+                sticky="ew",
+                pady=(0, 5),
+            )
+
+        actions = tk.Frame(content, bg=CONTROL_ALT)
+        actions.grid(row=2, column=0, sticky="e", pady=(18, 0))
+
+        def send_from_preview() -> None:
+            window.destroy()
+            self._send_selected_release_to("release", confirmed=True)
+
+        if summary is not None:
+            self._create_button(actions, text="Send To Release", command=send_from_preview, accent=True).pack(side="right")
+        self._create_button(actions, text="Close", command=window.destroy).pack(side="right", padx=(0, 8))
+
     def _show_mod_context_menu(self, event) -> None:
         if self.mods_tree.identify_region(event.x, event.y) == "heading":
             self._show_mod_column_menu(event)
@@ -2302,6 +2898,33 @@ class BotManagerApp:
         self.last_check_text.set(status.last_check_completed or status.last_check_started or "-")
         self.last_release_text.set(self._shorten_log_line(status.last_release_sent))
         self.last_error_text.set(self._shorten_log_line(status.last_error))
+        self._sync_action_buttons(status)
+
+    def _sync_action_buttons(self, status: manager_service.BotStatus) -> None:
+        setup_complete = status.venv_ready and (manager_service.ROOT_DIR / ".env").exists()
+        if self.setup_button is not None:
+            if setup_complete:
+                self.setup_button.grid_remove()
+            else:
+                self.setup_button.grid()
+        if self.start_stop_button is not None:
+            if setup_complete:
+                self.start_stop_button.grid_configure(row=0, column=0)
+            else:
+                self.start_stop_button.grid_configure(row=0, column=1)
+            if status.running:
+                self.start_stop_button.set_text("Stop Bot")
+                self.start_stop_button.set_command(self._stop_bot)
+            else:
+                self.start_stop_button.set_text("Start Bot")
+                self.start_stop_button.set_command(self._start_bot)
+
+    def _toggle_bot_running(self) -> None:
+        status = manager_service.get_status()
+        if status.running:
+            self._stop_bot()
+        else:
+            self._start_bot()
 
     def _refresh_logs(self, force: bool = False) -> None:
         signature = (manager_service.LOG_FILE.exists(), manager_service.LOG_FILE.stat().st_size if manager_service.LOG_FILE.exists() else 0)
@@ -2319,11 +2942,7 @@ class BotManagerApp:
         self.last_log_snapshot = content
 
         if force or self.follow_logs.get():
-            self.logs_view.configure(state="normal")
-            self.logs_view.delete("1.0", tk.END)
-            self.logs_view.insert(tk.END, content or "No log file yet.")
-            self.logs_view.see(tk.END)
-            self.logs_view.configure(state="disabled")
+            self._render_log_view()
 
         if current_release_count > previous_release_count:
             self._refresh_status()
@@ -2331,9 +2950,41 @@ class BotManagerApp:
 
     def _clear_log_view(self) -> None:
         self.last_log_snapshot = ""
+        self.last_log_display = ""
         self.logs_view.configure(state="normal")
         self.logs_view.delete("1.0", tk.END)
         self.logs_view.configure(state="disabled")
+
+    def _filtered_log_content(self) -> str:
+        content = self.last_log_snapshot
+        if not content:
+            return "No log file yet."
+
+        level = self.log_level_filter.get()
+        query = self.log_filter_text.get().strip().lower()
+        lines: list[str] = []
+        for line in content.splitlines():
+            if level != "All" and f" - {level} - " not in line:
+                continue
+            if query and query not in line.lower():
+                continue
+            lines.append(line)
+        return "\n".join(lines) if lines else "No log lines match the current filters."
+
+    def _render_log_view(self) -> None:
+        display = self._filtered_log_content()
+        if display == self.last_log_display:
+            return
+        self.last_log_display = display
+        self.logs_view.configure(state="normal")
+        self.logs_view.delete("1.0", tk.END)
+        self.logs_view.insert(tk.END, display)
+        self.logs_view.see(tk.END)
+        self.logs_view.configure(state="disabled")
+
+    def _on_log_filters_changed(self, *_args) -> None:
+        if hasattr(self, "logs_view"):
+            self._render_log_view()
 
     def _append_output(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -2390,9 +3041,13 @@ class BotManagerApp:
             elif event_type == "clear_add_inputs":
                 self.new_mod_id.set("")
                 self.mod_search_text.set("")
+            elif event_type == "reload_settings":
+                self._reload_settings_from_env()
+            elif event_type == "reset_complete":
+                self._apply_reset_state()
             elif event_type == "mod_search_results":
-                query, results = payload  # type: ignore[misc]
-                self._show_mod_search_results(str(query), results)  # type: ignore[arg-type]
+                query, search_mode, results = payload  # type: ignore[misc]
+                self._show_mod_search_results(str(query), str(search_mode), results)  # type: ignore[arg-type]
             elif event_type == "mod_search_error":
                 message = str(payload)
                 self.mod_search_status_text.set(message)
@@ -2461,6 +3116,22 @@ class BotManagerApp:
         except OSError as exc:
             self._append_output(f"Failed to restart app: {exc}")
 
+    def _validate_config(self) -> None:
+        check = manager_service.validate_runtime_config()
+        if not check.errors and not check.warnings:
+            self._append_output("Configuration check passed.")
+            self._set_notice("Configuration check passed.")
+            return
+
+        self._append_output("Configuration check results:")
+        for error in check.errors:
+            self._append_output(f"ERROR: {error}")
+        for warning in check.warnings:
+            self._append_output(f"WARNING: {warning}")
+        self._set_notice(
+            f"Configuration check found {len(check.errors)} error(s) and {len(check.warnings)} warning(s)."
+        )
+
     def _test_debug(self) -> None:
         def task() -> None:
             code = manager_service.send_debug_test(lambda line: self.events.put(("output", line)))
@@ -2484,6 +3155,12 @@ class BotManagerApp:
         self._run_action("Test Release", task)
 
     def _save_settings(self) -> None:
+        self._save_settings_with_optional_restart(False)
+
+    def _save_settings_and_restart(self) -> None:
+        self._save_settings_with_optional_restart(True)
+
+    def _save_settings_with_optional_restart(self, restart_after_save: bool) -> None:
         def task() -> None:
             manager_service.save_editable_settings(
                 manager_service.EditableSettings(
@@ -2492,16 +3169,94 @@ class BotManagerApp:
                     announce_messages=self.setting_announce_messages.get(),
                     add_reactions=self.setting_add_reactions.get(),
                     check_interval_minutes=self.setting_check_interval_minutes.get().strip(),
+                    message_header=self.setting_message_header.get().strip(),
+                    message_footer=self.setting_message_footer.get().strip(),
+                    show_logo=self.setting_show_logo.get(),
+                    logo_style=self.setting_logo_style.get().strip(),
+                    log_level=self.setting_log_level.get().strip(),
+                    message_content_intent=self.setting_message_content_intent.get(),
                 )
             )
             manager_service.save_game_defaults(
                 {game_id: var.get().strip() for game_id, var in self.game_release_channel_vars.items()},
                 {game_id: var.get().strip() for game_id, var in self.game_message_tag_vars.items()},
             )
-            self.events.put(("output", "Settings saved."))
-            self.events.put(("toast", ("Settings", "Settings saved. Restart the bot to apply them.")))
+            if restart_after_save:
+                pid = manager_service.restart_bot()
+                self.events.put(("output", f"Settings saved and bot restarted with PID {pid}."))
+                self.events.put(("toast", ("Settings", f"Settings saved and bot restarted.\nPID: {pid}")))
+            else:
+                self.events.put(("output", "Settings saved."))
+                self.events.put(("toast", ("Settings", "Settings saved. Restart the bot to apply them.")))
 
-        self._run_action("Save Settings", task)
+        self._run_action("Save & Restart" if restart_after_save else "Save Settings", task)
+
+    def _reload_settings_from_env(self) -> None:
+        settings = manager_service.get_editable_settings()
+        self.setting_message_tag.set(settings.message_tag)
+        self.setting_debug_channel_id.set(settings.debug_channel_id)
+        self.setting_announce_messages.set(settings.announce_messages)
+        self.setting_add_reactions.set(settings.add_reactions)
+        self.setting_check_interval_minutes.set(settings.check_interval_minutes)
+        self.setting_message_header.set(settings.message_header)
+        self.setting_message_footer.set(settings.message_footer)
+        self.setting_show_logo.set(settings.show_logo)
+        self.setting_logo_style.set(settings.logo_style)
+        self.setting_log_level.set(settings.log_level)
+        self.setting_message_content_intent.set(settings.message_content_intent)
+        self.game_release_channel_vars = {}
+        self.game_message_tag_vars = {}
+        self._render_game_defaults()
+
+    def _restore_env_backup(self) -> None:
+        if not self._confirm_once("restore_env_backup", "Restore the latest .env backup?"):
+            return
+
+        def task() -> None:
+            backup_path = manager_service.restore_latest_env_backup()
+            self.events.put(("output", f"Restored .env from {backup_path.name}."))
+            self.events.put(("toast", ("Settings", f"Restored .env from {backup_path.name}. Restart the bot to apply it.")))
+            self.events.put(("reload_settings", ""))
+
+        self._run_action("Restore Env Backup", task)
+
+    def _reset_tool_state(self) -> None:
+        confirmation = simpledialog.askstring(
+            "Reset Tool",
+            "This will stop the bot, reset .env from .env.example, and clear logs, stored releases, PID, and saved UI state.\n\nType RESET to continue:",
+            parent=self.root,
+        )
+        if confirmation != "RESET":
+            self._append_output("Reset cancelled.")
+            return
+
+        def task() -> None:
+            messages = manager_service.reset_tool_state()
+            for message in messages:
+                self.events.put(("output", message))
+            self.events.put(("toast", ("Reset", "Tool state reset. Review Settings before starting the bot.")))
+            self.events.put(("reset_complete", ""))
+
+        self._run_action("Reset Tool", task)
+
+    def _apply_reset_state(self) -> None:
+        self.release_summaries = []
+        self.mod_search_results = []
+        self.new_mod_id.set("")
+        self.mod_search_text.set("")
+        self.mod_search_mode.set("Mod name")
+        self.mod_search_game.set("All games")
+        self.mod_filter_text.set("")
+        self.mod_filter_game.set("All games")
+        self.mod_filter_following_only.set(False)
+        self.mod_filter_missing_versions_only.set(False)
+        self.log_filter_text.set("")
+        self.log_level_filter.set("All")
+        self.last_log_snapshot = ""
+        self.last_log_display = ""
+        self._reload_settings_from_env()
+        self._apply_release_summaries([])
+        self._clear_log_view()
 
     def _add_mod(self) -> None:
         mod_id = self.new_mod_id.get().strip()
@@ -2517,37 +3272,59 @@ class BotManagerApp:
 
         self._run_action("Add Mod", task)
 
-    def _searchable_game_ids(self) -> list[str]:
+    def _selected_search_game_ids(self) -> list[str]:
+        selected_game = self.mod_search_game.get()
+        if selected_game == "All games":
+            return []
+
         game_ids: list[str] = []
         for summary in self.release_summaries:
+            if summary.game_name != selected_game:
+                continue
             if summary.game_id and summary.game_id not in game_ids:
                 game_ids.append(summary.game_id)
         return game_ids
 
+    def _search_game_values(self) -> list[str]:
+        game_names = sorted({summary.game_name for summary in self.release_summaries if summary.game_id and summary.game_name})
+        return ["All games"] + game_names
+
+    def _refresh_mod_search_games(self) -> None:
+        values = self._search_game_values()
+        if self.mod_search_game_combo is not None and self.mod_search_game_combo.winfo_exists():
+            self.mod_search_game_combo.configure(values=tuple(values))
+        if self.mod_search_game.get() not in values:
+            self.mod_search_game.set("All games")
+
     def _search_mods(self) -> None:
         query = self.mod_search_text.get().strip()
         if len(query) < 2:
-            self._append_output("Enter at least 2 characters to search.")
+            self._open_mod_search_window(query)
+            self.mod_search_status_text.set("Enter at least 2 characters to search CurseForge.")
             return
 
-        game_ids = self._searchable_game_ids()
+        search_mode = "author" if self.mod_search_mode.get() == "Author" else "mod"
+        game_ids = self._selected_search_game_ids()
         self._open_mod_search_window(query)
+        self._apply_mod_search_columns()
         self.mod_search_status_text.set("Searching CurseForge...")
 
-        thread = threading.Thread(target=self._mod_search_worker, args=(query, game_ids), daemon=True)
+        thread = threading.Thread(target=self._mod_search_worker, args=(query, game_ids, search_mode), daemon=True)
         thread.start()
 
-    def _mod_search_worker(self, query: str, game_ids: list[str]) -> None:
+    def _mod_search_worker(self, query: str, game_ids: list[str], search_mode: str) -> None:
         try:
-            results = manager_service.search_mods(query, game_ids)
+            results = manager_service.search_mods(query, game_ids, search_mode)
         except Exception as exc:
             self.events.put(("mod_search_error", str(exc)))
             return
 
-        self.events.put(("mod_search_results", (query, results)))
+        self.events.put(("mod_search_results", (query, search_mode, results)))
 
     def _open_mod_search_window(self, query: str) -> None:
         if self.mod_search_window is not None and self.mod_search_window.winfo_exists():
+            self._refresh_mod_search_games()
+            self._apply_mod_search_columns()
             self.mod_search_window.minsize(1040, 680)
             self.mod_search_window.geometry("1120x700")
             self.mod_search_window.deiconify()
@@ -2572,13 +3349,14 @@ class BotManagerApp:
         body = tk.Frame(outer, bg=PANEL_ALT, bd=0, highlightthickness=0, padx=18, pady=18)
         body.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
         body.columnconfigure(0, weight=1)
-        body.rowconfigure(2, weight=1)
-        body.rowconfigure(3, minsize=52)
+        body.rowconfigure(3, weight=1)
+        body.rowconfigure(4, minsize=52)
+        self._refresh_mod_search_games()
 
         tk.Label(body, text="Search CurseForge Mods", bg=PANEL_ALT, fg=TEXT, font=("Segoe UI Semibold", 18)).grid(row=0, column=0, sticky="w")
         tk.Label(
             body,
-            text="Public results depend on what the CurseForge API returns for your key. Direct MOD_ID add still works for private or unlisted projects you can access.",
+            text="Search by mod name or author. Public results depend on what the CurseForge API returns for your key.",
             bg=PANEL_ALT,
             fg=MUTED,
             font=("Segoe UI", 10),
@@ -2586,35 +3364,72 @@ class BotManagerApp:
             justify="left",
         ).grid(row=1, column=0, sticky="ew", pady=(6, 12))
 
+        search_bar = tk.Frame(body, bg=PANEL_ALT)
+        search_bar.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        search_bar.columnconfigure(1, weight=1)
+        ttk.Label(search_bar, text="Search", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
+        self._create_entry(search_bar, textvariable=self.mod_search_text, width=34, on_return=self._search_mods).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(8, 12),
+        )
+        ttk.Label(search_bar, text="Type", style="Panel.TLabel").grid(row=0, column=2, sticky="w")
+        mode_combo = ttk.Combobox(
+            search_bar,
+            textvariable=self.mod_search_mode,
+            values=("Mod name", "Author"),
+            state="readonly",
+            width=12,
+        )
+        mode_combo.grid(row=0, column=3, sticky="ew", padx=(8, 12))
+        mode_combo.bind("<<ComboboxSelected>>", lambda _event: self._on_mod_search_mode_changed(), add="+")
+        ttk.Label(search_bar, text="Game", style="Panel.TLabel").grid(row=0, column=4, sticky="w")
+        self.mod_search_game_combo = ttk.Combobox(
+            search_bar,
+            textvariable=self.mod_search_game,
+            values=tuple(self._search_game_values()),
+            state="readonly",
+            width=22,
+        )
+        self.mod_search_game_combo.grid(row=0, column=5, sticky="ew", padx=(8, 12))
+        self._create_button(search_bar, text="Search", command=self._search_mods, accent=True).grid(row=0, column=6, sticky="ew")
+
         results_frame = tk.Frame(body, bg=PANEL_ALT)
-        results_frame.grid(row=2, column=0, sticky="nsew")
+        results_frame.grid(row=3, column=0, sticky="nsew")
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
 
-        columns = ("mod_name", "game_name", "mod_id", "download_count", "thumbs_up_count", "curseforge_updated_at")
+        columns = ("mod_name", "author_name", "game_name", "mod_id", "status", "download_count", "thumbs_up_count", "curseforge_updated_at")
         tree = ttk.Treeview(results_frame, columns=columns, show="headings", height=8)
         tree.grid(row=0, column=0, sticky="nsew")
         tree.heading("mod_name", text="Mod")
+        tree.heading("author_name", text="Author")
         tree.heading("game_name", text="Game")
         tree.heading("mod_id", text="MOD_ID")
+        tree.heading("status", text="Status")
         tree.heading("download_count", text="Downloads")
         tree.heading("thumbs_up_count", text="Likes")
         tree.heading("curseforge_updated_at", text="Updated")
-        tree.column("mod_name", width=260, anchor="w", stretch=True)
-        tree.column("game_name", width=190, anchor="w", stretch=True)
+        tree.column("mod_name", width=250, anchor="w", stretch=True)
+        tree.column("author_name", width=170, anchor="w", stretch=True)
+        tree.column("game_name", width=170, anchor="w", stretch=True)
         tree.column("mod_id", width=100, anchor="w", stretch=False)
+        tree.column("status", width=110, anchor="w", stretch=False)
         tree.column("download_count", width=110, anchor="e", stretch=False)
         tree.column("thumbs_up_count", width=80, anchor="e", stretch=False)
         tree.column("curseforge_updated_at", width=160, anchor="w", stretch=False)
         tree.bind("<Double-1>", lambda _event: self._add_selected_search_result())
+        tree.bind("<Configure>", lambda _event: self._fit_mod_search_columns(), add="+")
         self.mod_search_tree = tree
+        self._apply_mod_search_columns()
 
         yscroll = ttk.Scrollbar(results_frame, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=yscroll.set)
         yscroll.grid(row=0, column=1, sticky="ns", padx=(8, 0))
 
         footer = tk.Frame(body, bg=PANEL_ALT)
-        footer.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        footer.grid(row=4, column=0, sticky="ew", pady=(12, 0))
         footer.columnconfigure(0, weight=1)
         tk.Label(
             footer,
@@ -2626,9 +3441,13 @@ class BotManagerApp:
             justify="left",
         ).grid(row=0, column=0, sticky="w")
         self._create_button(footer, text="Add Selected", command=self._add_selected_search_result, accent=True).grid(row=0, column=1, sticky="e", padx=(8, 0))
-        self._create_button(footer, text="Close", command=self._close_mod_search_window).grid(row=0, column=2, sticky="e", padx=(8, 0))
+        self._create_button(footer, text="Open Page", command=self._open_selected_search_result_page).grid(row=0, column=2, sticky="e", padx=(8, 0))
+        self._create_button(footer, text="Close", command=self._close_mod_search_window).grid(row=0, column=3, sticky="e", padx=(8, 0))
 
-        self.mod_search_status_text.set(f'Searching "{query}"...')
+        if query:
+            self.mod_search_status_text.set(f'Searching "{query}"...')
+        else:
+            self.mod_search_status_text.set("Enter at least 2 characters to search CurseForge.")
         window.update_idletasks()
         requested_width = outer.winfo_reqwidth() + 32
         requested_height = outer.winfo_reqheight() + 32
@@ -2642,13 +3461,67 @@ class BotManagerApp:
             self.mod_search_window.destroy()
         self.mod_search_window = None
         self.mod_search_tree = None
+        self.mod_search_game_combo = None
 
-    def _show_mod_search_results(self, query: str, results: list[manager_service.ModSearchResult]) -> None:
+    def _on_mod_search_mode_changed(self) -> None:
+        self._apply_mod_search_columns()
+        if self.mod_search_mode.get() == "Author":
+            self.mod_search_status_text.set("Author searches hide the author column because every row is matched by author.")
+        elif self.mod_search_status_text.get().startswith("Author searches"):
+            self.mod_search_status_text.set("Enter at least 2 characters to search CurseForge.")
+
+    def _apply_mod_search_columns(self) -> None:
+        if self.mod_search_tree is None:
+            return
+        if self.mod_search_mode.get() == "Author":
+            display_columns = ("mod_name", "game_name", "mod_id", "status", "download_count", "thumbs_up_count", "curseforge_updated_at")
+        else:
+            display_columns = ("mod_name", "author_name", "game_name", "mod_id", "status", "download_count", "thumbs_up_count", "curseforge_updated_at")
+        self.mod_search_tree.configure(displaycolumns=display_columns)
+        self.root.after_idle(self._fit_mod_search_columns)
+
+    def _fit_mod_search_columns(self) -> None:
+        if self.mod_search_tree is None:
+            return
+
+        visible_columns = tuple(str(column) for column in self.mod_search_tree["displaycolumns"])
+        if not visible_columns:
+            return
+
+        fixed_widths = {
+            "mod_id": 95,
+            "status": 95,
+            "download_count": 105,
+            "thumbs_up_count": 75,
+            "curseforge_updated_at": 145,
+        }
+        base_widths = {
+            "mod_name": 260,
+            "author_name": 170,
+            "game_name": 180,
+        }
+        stretch_columns = [column for column in visible_columns if column in base_widths]
+        total_width = max(self.mod_search_tree.winfo_width() - 24, 900)
+        fixed_total = sum(fixed_widths.get(column, 0) for column in visible_columns)
+        base_total = sum(base_widths.get(column, 0) for column in stretch_columns)
+        extra_width = max(total_width - fixed_total - base_total, 0)
+        extra_per_column = extra_width // max(len(stretch_columns), 1)
+
+        for column in visible_columns:
+            if column in fixed_widths:
+                self.mod_search_tree.column(column, width=fixed_widths[column], stretch=False)
+            elif column in base_widths:
+                self.mod_search_tree.column(column, width=base_widths[column] + extra_per_column, stretch=True)
+
+    def _show_mod_search_results(self, query: str, search_mode: str, results: list[manager_service.ModSearchResult]) -> None:
         self.mod_search_results = results
+        self.mod_search_mode.set("Author" if search_mode == "author" else "Mod name")
         self._open_mod_search_window(query)
+        self._apply_mod_search_columns()
         self._populate_mod_search_tree()
         if results:
-            self.mod_search_status_text.set(f'Found {len(results)} result(s) for "{query}". Double-click a row or use Add Selected.')
+            label = "author" if search_mode == "author" else "mod name"
+            self.mod_search_status_text.set(f'Found {len(results)} result(s) by {label} for "{query}". Double-click a row or use Add Selected.')
             self._set_notice(f"Search returned {len(results)} result(s).")
         else:
             self.mod_search_status_text.set(
@@ -2661,6 +3534,7 @@ class BotManagerApp:
             return
         for item in self.mod_search_tree.get_children():
             self.mod_search_tree.delete(item)
+        configured_mod_ids = {summary.mod_id for summary in self.release_summaries}
         for result in self.mod_search_results:
             self.mod_search_tree.insert(
                 "",
@@ -2668,8 +3542,10 @@ class BotManagerApp:
                 iid=f"search:{result.mod_id}",
                 values=(
                     result.mod_name,
+                    result.author_name,
                     result.game_name,
                     result.mod_id,
+                    "Tracked" if result.mod_id in configured_mod_ids else "New",
                     result.download_count,
                     result.thumbs_up_count,
                     self._format_curseforge_date(result.curseforge_updated_at),
@@ -2695,8 +3571,21 @@ class BotManagerApp:
         if result is None:
             self._append_output("Select a search result first.")
             return
+        if any(summary.mod_id == result.mod_id for summary in self.release_summaries):
+            self._append_output(f"MOD_ID {result.mod_id} is already tracked.")
+            return
         self.new_mod_id.set(result.mod_id)
         self._add_mod()
+
+    def _open_selected_search_result_page(self) -> None:
+        result = self._selected_search_result()
+        if result is None:
+            self._append_output("Select a search result first.")
+            return
+        if not result.public_url:
+            self._append_output("No public CurseForge page is available for the selected result.")
+            return
+        os.startfile(result.public_url)
 
     def _remove_selected_mod(self) -> None:
         selected_mod = self._selected_mod_id()
@@ -2723,17 +3612,17 @@ class BotManagerApp:
         self._open_selected_versions_window()
 
     def _send_selected_release(self) -> None:
-        self._send_selected_release_to("release")
+        self._preview_selected_release()
 
     def _send_selected_release_to_debug(self) -> None:
         self._send_selected_release_to("debug")
 
-    def _send_selected_release_to(self, target: str) -> None:
+    def _send_selected_release_to(self, target: str, confirmed: bool = False) -> None:
         selected_mod = self._selected_mod_id()
         if not selected_mod:
             self._append_output("Select a mod first.")
             return
-        if target == "release" and not self._confirm_once(
+        if target == "release" and not confirmed and not self._confirm_once(
             "send_release",
             f"Send the latest release again to the release channel for MOD_ID {selected_mod}?",
         ):

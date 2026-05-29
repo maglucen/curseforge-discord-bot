@@ -3,6 +3,38 @@ import os
 from dotenv import load_dotenv
 import logging
 
+VALID_LOG_LEVELS = {
+    'DEBUG': logging.DEBUG,
+    'INFO': logging.INFO,
+    'WARNING': logging.WARNING,
+    'ERROR': logging.ERROR,
+    'CRITICAL': logging.CRITICAL
+}
+
+
+def _parse_int_list(raw_value: str, *, name: str) -> list[int]:
+    values: list[int] = []
+    for item in raw_value.split(','):
+        entry = item.strip()
+        if not entry:
+            continue
+        try:
+            values.append(int(entry))
+        except ValueError:
+            logging.warning(f"Skipping invalid {name} entry: {entry}")
+    return values
+
+
+def _parse_int_value(raw_value: str, *, name: str) -> int:
+    value = raw_value.strip()
+    if not value:
+        return 0
+    try:
+        return int(value)
+    except ValueError:
+        logging.warning(f"Invalid {name} '{value}', defaulting to 0")
+        return 0
+
 def _parse_text_mapping(raw_value: str, *, item_separator: str = ";") -> dict[int, str]:
     mapping: dict[int, str] = {}
     for item in raw_value.split(item_separator):
@@ -47,35 +79,25 @@ class Config:
         load_dotenv(override=True)
         
         # Set up logging configuration
-        valid_levels = {
-            'DEBUG': logging.DEBUG,
-            'INFO': logging.INFO,
-            'WARNING': logging.WARNING,
-            'ERROR': logging.ERROR,
-            'CRITICAL': logging.CRITICAL
-        }
         log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-        if log_level not in valid_levels:
+        if log_level not in VALID_LOG_LEVELS:
             print(f"Invalid LOG_LEVEL '{log_level}', defaulting to INFO")
             log_level = 'INFO'
         
         # Configure logging
         logging.basicConfig(
-            level=valid_levels[log_level],
+            level=VALID_LOG_LEVELS[log_level],
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
         logging.info(f"Logging level set to {log_level}")
+        self.log_level: str = log_level
         
         # Discord settings
         self.bot_token: str = os.getenv('BOT_TOKEN', '')
-        self.debug_channel_id: int = int(os.getenv('DEBUG_CHANNEL_ID', '0'))
+        self.debug_channel_id: int = _parse_int_value(os.getenv('DEBUG_CHANNEL_ID', '0'), name='DEBUG_CHANNEL_ID')
         
         # Parse releases channel IDs
-        self.releases_channel_ids: List[int] = [
-            int(channel_id.strip()) 
-            for channel_id in os.getenv('RELEASES_CHANNEL_IDS', '').split(',')
-            if channel_id.strip()
-        ]
+        self.releases_channel_ids: List[int] = _parse_int_list(os.getenv('RELEASES_CHANNEL_IDS', ''), name='RELEASES_CHANNEL_IDS')
         self.game_release_channel_ids: dict[int, int] = _parse_int_mapping(
             os.getenv('GAME_RELEASE_CHANNEL_IDS', '')
         )
@@ -88,20 +110,12 @@ class Config:
         raw_key = os.getenv('CURSEFORGE_API_KEY', '')
         logging.debug(f"Raw Curseforge API Key from env: {raw_key}")
         self.curseforge_api_key: str = raw_key.replace("'", "").replace('"', '')
-        self.mod_ids: List[int] = [
-            int(mod_id.strip()) 
-            for mod_id in os.getenv('MOD_IDS', '').split(',')
-            if mod_id.strip()
-        ]
+        self.mod_ids: List[int] = _parse_int_list(os.getenv('MOD_IDS', ''), name='MOD_IDS')
         following_mod_ids_env = os.getenv('FOLLOWING_MOD_IDS')
         if following_mod_ids_env is None:
             self.following_mod_ids: List[int] = list(self.mod_ids)
         else:
-            self.following_mod_ids = [
-                int(mod_id.strip())
-                for mod_id in following_mod_ids_env.split(',')
-                if mod_id.strip()
-            ]
+            self.following_mod_ids = _parse_int_list(following_mod_ids_env, name='FOLLOWING_MOD_IDS')
         logging.debug(f"Loaded CurseForge settings - mod_ids: {self.mod_ids}, following_mod_ids: {self.following_mod_ids}")
         
         # Message templates

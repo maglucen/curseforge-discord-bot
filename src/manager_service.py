@@ -14,6 +14,7 @@ import sys
 import time
 
 from src.config import config
+from src.config import VALID_LOG_LEVELS
 from src.curseforge import CurseForgeAPI
 from src.storage import ReleaseStorage
 
@@ -27,6 +28,9 @@ LOG_DIR = LOCAL_DIR / "logs"
 LOG_FILE = LOG_DIR / "bot.log"
 RELEASES_DIR = LOCAL_DIR / "releases"
 RELEASES_DB = RELEASES_DIR / "releases.db"
+ENV_BACKUP_DIR = LOCAL_DIR / "env-backups"
+WINDOW_GEOMETRY_FILE = LOCAL_DIR / "manager-window-geometry.txt"
+UI_STATE_FILE = LOCAL_DIR / "manager-ui-state.json"
 MANAGER_CONTROL_HOST = "127.0.0.1"
 MANAGER_CONTROL_PORT = 47831
 
@@ -97,6 +101,7 @@ class ModReleaseSummary:
 class ModSearchResult:
     mod_id: str
     mod_name: str
+    author_name: str
     game_id: str
     game_name: str
     curseforge_updated_at: str
@@ -112,6 +117,12 @@ class EditableSettings:
     announce_messages: bool
     add_reactions: bool
     check_interval_minutes: str
+    message_header: str
+    message_footer: str
+    show_logo: bool
+    logo_style: str
+    log_level: str
+    message_content_intent: bool
 
 
 @dataclass
@@ -122,10 +133,17 @@ class DashboardStats:
     following_mod_count: int
 
 
+@dataclass
+class ConfigCheck:
+    errors: list[str]
+    warnings: list[str]
+
+
 def ensure_runtime_dirs() -> None:
     LOCAL_DIR.mkdir(exist_ok=True)
     LOG_DIR.mkdir(exist_ok=True)
     RELEASES_DIR.mkdir(exist_ok=True)
+    ENV_BACKUP_DIR.mkdir(exist_ok=True)
 
 
 def read_env_values() -> dict[str, str]:
@@ -153,7 +171,93 @@ def _read_env_lines() -> list[str]:
 def _write_env_lines(lines: list[str]) -> None:
     env_path = ROOT_DIR / ".env"
     text = "\n".join(lines).rstrip() + "\n"
+    _backup_env_file(text)
     env_path.write_text(text, encoding="utf-8")
+
+
+def _backup_env_file(next_text: str) -> None:
+    env_path = ROOT_DIR / ".env"
+    if not env_path.exists():
+        return
+
+    try:
+        current_text = env_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    if current_text == next_text:
+        return
+
+    ensure_runtime_dirs()
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = ENV_BACKUP_DIR / f".env.{timestamp}.bak"
+    try:
+        backup_path.write_text(current_text, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def latest_env_backup() -> Path | None:
+    if not ENV_BACKUP_DIR.exists():
+        return None
+    backups = sorted(ENV_BACKUP_DIR.glob(".env.*.bak"), key=lambda path: path.stat().st_mtime, reverse=True)
+    return backups[0] if backups else None
+
+
+def restore_latest_env_backup() -> Path:
+    backup_path = latest_env_backup()
+    if backup_path is None:
+        raise RuntimeError("No .env backup is available.")
+    env_path = ROOT_DIR / ".env"
+    env_path.write_text(backup_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+    return backup_path
+
+
+def reset_tool_state() -> list[str]:
+    """Reset local configuration and runtime data while preserving the Python environment."""
+    ensure_runtime_dirs()
+    messages: list[str] = []
+    was_running = stop_bot()
+    if was_running:
+        messages.append("Stopped the running bot.")
+
+    env_path = ROOT_DIR / ".env"
+    env_example_path = ROOT_DIR / ".env.example"
+    if env_path.exists():
+        try:
+            current_text = env_path.read_text(encoding="utf-8", errors="replace")
+            _backup_env_file("")
+            messages.append("Backed up the current .env.")
+        except OSError:
+            current_text = ""
+    else:
+        current_text = ""
+
+    if env_example_path.exists():
+        example_text = env_example_path.read_text(encoding="utf-8", errors="replace")
+        if env_path.exists() and current_text != example_text:
+            _backup_env_file(example_text)
+        env_path.write_text(example_text, encoding="utf-8")
+        messages.append("Restored .env from .env.example.")
+    elif env_path.exists():
+        env_path.unlink()
+        messages.append("Removed .env because no .env.example file exists.")
+
+    files_to_remove = [
+        PID_FILE,
+        LOG_FILE,
+        RELEASES_DB,
+        WINDOW_GEOMETRY_FILE,
+        UI_STATE_FILE,
+    ]
+    for path in files_to_remove:
+        try:
+            path.unlink(missing_ok=True)
+            messages.append(f"Removed {path.relative_to(ROOT_DIR)}.")
+        except OSError as exc:
+            messages.append(f"Could not remove {path.relative_to(ROOT_DIR)}: {exc}.")
+
+    ensure_runtime_dirs()
+    return messages
 
 
 def _set_env_values(updates: dict[str, str]) -> None:
@@ -246,6 +350,12 @@ def get_editable_settings() -> EditableSettings:
         announce_messages=_parse_bool(env_values.get("ANNOUNCE_MESSAGES", "false")),
         add_reactions=_parse_bool(env_values.get("ADD_REACTIONS", "true"), default=True),
         check_interval_minutes=env_values.get("CHECK_INTERVAL_MINUTES", env_values.get("CHECK_INTERVAL", "5")),
+        message_header=env_values.get("MESSAGE_HEADER", ""),
+        message_footer=env_values.get("MESSAGE_FOOTER", ""),
+        show_logo=_parse_bool(env_values.get("SHOW_LOGO", "true"), default=True),
+        logo_style=env_values.get("LOGO_STYLE", "thumbnail"),
+        log_level=env_values.get("LOG_LEVEL", "INFO"),
+        message_content_intent=_parse_bool(env_values.get("MESSAGE_CONTENT_INTENT", "false")),
     )
 
 
@@ -262,6 +372,14 @@ def save_editable_settings(settings: EditableSettings) -> None:
     if interval_value <= 0:
         raise RuntimeError("Check interval must be greater than 0.")
 
+    logo_style = settings.logo_style.strip().lower() or "thumbnail"
+    if logo_style not in {"thumbnail", "fullwidth"}:
+        raise RuntimeError("Logo style must be thumbnail or fullwidth.")
+
+    log_level = settings.log_level.strip().upper() or "INFO"
+    if log_level not in VALID_LOG_LEVELS:
+        raise RuntimeError("Log level must be DEBUG, INFO, WARNING, ERROR, or CRITICAL.")
+
     _set_env_values(
         {
             "MESSAGE_TAG": _normalize_message_tag_value(settings.message_tag),
@@ -269,8 +387,50 @@ def save_editable_settings(settings: EditableSettings) -> None:
             "ANNOUNCE_MESSAGES": "true" if settings.announce_messages else "false",
             "ADD_REACTIONS": "true" if settings.add_reactions else "false",
             "CHECK_INTERVAL_MINUTES": str(interval_value).rstrip("0").rstrip(".") if "." in str(interval_value) else str(interval_value),
+            "MESSAGE_HEADER": settings.message_header.strip(),
+            "MESSAGE_FOOTER": settings.message_footer.strip(),
+            "SHOW_LOGO": "true" if settings.show_logo else "false",
+            "LOGO_STYLE": logo_style,
+            "LOG_LEVEL": log_level,
+            "MESSAGE_CONTENT_INTENT": "true" if settings.message_content_intent else "false",
         }
     )
+
+
+def validate_runtime_config() -> ConfigCheck:
+    env_path = ROOT_DIR / ".env"
+    env_values = read_env_values()
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not env_path.exists():
+        errors.append(".env is missing. Copy .env.example or fill settings before starting the bot.")
+
+    required_keys = ["BOT_TOKEN", "CURSEFORGE_API_KEY", "DEBUG_CHANNEL_ID", "MOD_IDS", "RELEASES_CHANNEL_IDS"]
+    for key in required_keys:
+        if not env_values.get(key, "").strip():
+            errors.append(f"{key} is required.")
+
+    numeric_keys = ["DEBUG_CHANNEL_ID"]
+    for key in numeric_keys:
+        value = env_values.get(key, "").strip()
+        if value and not value.isdigit():
+            errors.append(f"{key} must be numeric.")
+
+    for key in ["MOD_IDS", "RELEASES_CHANNEL_IDS"]:
+        for value in [item.strip() for item in env_values.get(key, "").split(",") if item.strip()]:
+            if not value.isdigit():
+                errors.append(f"{key} contains a non-numeric value: {value}.")
+
+    mod_ids = [item.strip() for item in env_values.get("MOD_IDS", "").split(",") if item.strip()]
+    release_channels = [item.strip() for item in env_values.get("RELEASES_CHANNEL_IDS", "").split(",") if item.strip()]
+    if mod_ids and release_channels and len(mod_ids) > len(release_channels):
+        warnings.append("There are fewer release channels than mods; extra mods will use the first release channel.")
+
+    if not VENV_PYTHON.exists():
+        warnings.append("Python environment is missing. Run Setup before Start.")
+
+    return ConfigCheck(errors=errors, warnings=warnings)
 
 
 def get_configured_mod_ids() -> list[str]:
@@ -368,12 +528,13 @@ def _resolve_message_tag_for_mod(
     game_id: str,
     mod_message_tags: dict[str, str],
     game_message_tags: dict[str, str],
+    default_message_tag: str,
 ) -> str:
     if mod_id in mod_message_tags:
         return mod_message_tags[mod_id]
     if game_id and game_id in game_message_tags:
         return game_message_tags[game_id]
-    return config.message_tag
+    return default_message_tag
 
 
 def _derive_author_name(mod_info: dict) -> str:
@@ -457,6 +618,7 @@ def _build_mod_search_result(mod_id: str, mod_info: dict) -> ModSearchResult:
     return ModSearchResult(
         mod_id=mod_id,
         mod_name=str(cached_info.get("mod_name", mod_id)),
+        author_name=str(cached_info.get("author_name", "-")),
         game_id=str(cached_info.get("game_id", "")),
         game_name=str(cached_info.get("game_name", "Unknown game")),
         curseforge_updated_at=str(cached_info.get("curseforge_updated_at", "")),
@@ -466,7 +628,7 @@ def _build_mod_search_result(mod_id: str, mod_info: dict) -> ModSearchResult:
     )
 
 
-async def _search_mods_async(query: str, game_ids: list[str]) -> list[ModSearchResult]:
+async def _search_mods_async(query: str, game_ids: list[str], search_mode: str = "mod") -> list[ModSearchResult]:
     cf_api = CurseForgeAPI(config.curseforge_api_key)
     normalized_game_ids = [game_id for game_id in game_ids if game_id.isdigit()]
     search_game_ids: list[int | None] = [int(game_id) for game_id in normalized_game_ids] or [None]
@@ -477,23 +639,27 @@ async def _search_mods_async(query: str, game_ids: list[str]) -> list[ModSearchR
             mod_id = str(mod_info.get("id") or "")
             if not mod_id or mod_id in results_by_id:
                 continue
-            results_by_id[mod_id] = _build_mod_search_result(mod_id, mod_info)
+            result = _build_mod_search_result(mod_id, mod_info)
+            if search_mode == "author" and query.lower() not in result.author_name.lower():
+                continue
+            results_by_id[mod_id] = result
 
     return list(results_by_id.values())
 
 
-def search_mods(query: str, game_ids: list[str] | None = None) -> list[ModSearchResult]:
+def search_mods(query: str, game_ids: list[str] | None = None, search_mode: str = "mod") -> list[ModSearchResult]:
     normalized_query = query.strip()
     if len(normalized_query) < 2:
         raise RuntimeError("Enter at least 2 characters to search.")
     if not config.curseforge_api_key:
         raise RuntimeError("CURSEFORGE_API_KEY is required to search CurseForge.")
 
-    selected_game_ids = [game_id.strip() for game_id in (game_ids or []) if game_id.strip()]
-    if not selected_game_ids:
+    selected_game_ids = [game_id.strip() for game_id in game_ids if game_id.strip()] if game_ids is not None else []
+    if game_ids is None and not selected_game_ids:
         selected_game_ids = _configured_game_ids_from_cache()
 
-    return asyncio.run(_search_mods_async(normalized_query, selected_game_ids))
+    normalized_mode = "author" if search_mode == "author" else "mod"
+    return asyncio.run(_search_mods_async(normalized_query, selected_game_ids, normalized_mode))
 
 
 def get_mod_names(mod_ids: list[str]) -> dict[str, str]:
@@ -722,6 +888,7 @@ def list_tracked_releases() -> list[ModReleaseSummary]:
     mod_release_channel_ids = get_mod_release_channel_ids()
     game_message_tags = get_game_message_tags()
     mod_message_tags = get_mod_message_tags()
+    default_message_tag = read_env_values().get("MESSAGE_TAG", "")
     following_mod_ids = set(get_following_mod_ids())
     storage = ReleaseStorage(str(RELEASES_DB))
     rows = storage.get_all_releases()
@@ -757,6 +924,7 @@ def list_tracked_releases() -> list[ModReleaseSummary]:
                     game_id,
                     mod_message_tags,
                     game_message_tags,
+                    default_message_tag,
                 ),
                 release_channel_override=mod_release_channel_ids.get(mod_id, ""),
                 message_tag_override=mod_message_tags.get(mod_id, ""),
@@ -897,6 +1065,10 @@ def start_bot() -> int:
     if not VENV_PYTHON.exists():
         raise RuntimeError("The environment is missing. Run Setup first.")
 
+    config_check = validate_runtime_config()
+    if config_check.errors:
+        raise RuntimeError("Fix configuration errors before starting the bot: " + "; ".join(config_check.errors))
+
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
@@ -976,6 +1148,16 @@ def stream_command(command: list[str], callback: Callable[[str], None]) -> int:
 def setup_environment(callback: Callable[[str], None]) -> int:
     ensure_runtime_dirs()
     bootstrap_python = sys.executable or "python"
+    env_path = ROOT_DIR / ".env"
+    env_example_path = ROOT_DIR / ".env.example"
+
+    if not env_path.exists() and env_example_path.exists():
+        callback("Creating .env from .env.example...")
+        env_path.write_text(env_example_path.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+    elif env_path.exists():
+        callback(".env already exists.")
+    else:
+        callback(".env.example was not found; skipping .env creation.")
 
     if not VENV_PYTHON.exists():
         callback("Creating virtual environment...")

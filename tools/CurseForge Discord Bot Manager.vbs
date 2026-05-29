@@ -1,7 +1,8 @@
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
-root = fso.GetParentFolderName(WScript.ScriptFullName)
+tools = fso.GetParentFolderName(WScript.ScriptFullName)
+root = fso.GetParentFolderName(tools)
 launcher = root & "\tools\bot-manager.bat"
 
 shell.CurrentDirectory = root

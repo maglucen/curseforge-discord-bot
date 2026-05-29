@@ -19,10 +19,22 @@ def format_links_label(mod_name: str, version: str) -> str:
     return "Links"
 
 
+def build_file_url(mod_info: dict, latest_file: dict) -> str:
+    links = mod_info.get("links") or {}
+    website_url = str(links.get("websiteUrl") or "").rstrip("/")
+    file_id = latest_file.get("id")
+    if website_url and file_id:
+        return f"{website_url}/files/{file_id}"
+    if latest_file.get("downloadUrl"):
+        return str(latest_file["downloadUrl"])
+    slug = str(mod_info.get("slug") or "").strip("/")
+    return f"https://www.curseforge.com/mods/{slug}/files/{file_id}" if slug and file_id else "https://www.curseforge.com"
+
+
 def build_release_embed(mod_info: dict, latest_file: dict) -> discord.Embed:
     version = latest_file["version"]
     description = format_description(mod_info["name"], version)
-    file_url = f"https://www.curseforge.com/ark-survival-ascended/mods/{mod_info['slug']}/files/{latest_file['id']}"
+    file_url = build_file_url(mod_info, latest_file)
     download_url = latest_file.get("downloadUrl") or file_url
     embed = discord.Embed(
         title=f"{mod_info['name']} v{version}",
@@ -42,7 +54,7 @@ def build_release_embed(mod_info: dict, latest_file: dict) -> discord.Embed:
     changelog = latest_file.get("changelog")
     if changelog:
         suffix = "...\n\n[View full changelog]({})".format(file_url)
-        remaining_space = 1024 - (len(suffix) + len(file_url) + 2)
+        remaining_space = max(0, 1024 - len(suffix))
 
         if len(changelog) > remaining_space:
             changelog = f"{changelog[:remaining_space]}{suffix}"
